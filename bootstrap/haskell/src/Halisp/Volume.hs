@@ -50,9 +50,9 @@ difference (Volume xS) (Volume yS) = Volume (Set.difference xS yS)
 intersection :: Volume -> Volume -> Volume
 intersection (Volume xS) (Volume yS) = Volume (Set.intersection xS yS)
 
--- Determines whether the first volume is fully contained by the second.
+-- Determines whether the first volume fully contains the second.
 contains :: Volume -> Volume -> Bool
-contains (Volume xS) (Volume yS) = Set.isSubsetOf xS yS
+contains (Volume xS) (Volume yS) = Set.isSubsetOf yS xS
 
 -- Determines whether the given volumes intersect.
 intersects :: Volume -> Volume -> Bool

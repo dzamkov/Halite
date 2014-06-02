@@ -22,7 +22,6 @@ module Halisp.System.Internal (
 ) where
 
 import Prelude hiding (reverse)
-import Prelude.Extras (Eq1 (..), Ord1 (..))
 import Halisp.Condition ((||^))
 import qualified Halisp.Condition as Condition
 import Data.Set (Set)
@@ -54,12 +53,6 @@ data Term v
 	| Com (Vector (Term v)) 
 	deriving (Eq, Ord, Show)
 
-instance Eq1 Term where
-	(==#) = (==)
-	
-instance Ord1 Term where
-	compare1 = compare
-	
 instance Condition.Formula Term where
 	frefers p t = trefers p t
 	fmap m t = tmap m t
@@ -97,12 +90,6 @@ tvars (Com elems) = Vector.foldl (\a t -> Set.union a (tvars t)) Set.empty elems
 -- applicative term is equal to an arbitrary term.
 data Cons v = Eq (Maybe Int) Int (Vector (Term v)) (Term v) deriving (Eq, Ord, Show)
 
-instance Eq1 Cons where
-	(==#) = (==)
-
-instance Ord1 Cons where
-	compare1 = compare
-
 instance Condition.Formula Cons where
 	frefers p (Eq _ sym args other) = Vector.any (trefers p) args || trefers p other
 	fmap m (Eq prv sym args other) = Eq prv sym (Vector.map (tmap m) args) (tmap m other)
@@ -119,10 +106,10 @@ ceq prv c x y = res where
 	ceqVar v t | Condition.frefers (== v) t = case t of
 		App sym args -> Condition.simple $ Eq Nothing sym args (Var v)
 		_ -> Condition.never
-	ceqVar v t = Condition.solution [(v, t)]
+	ceqVar v t = Condition.solutionFromList [(v, t)]
 	res = case (x, y) of
 		(Var x, Var y) -> if x == y then Condition.always
-			else Condition.solution [(x, Var y)]
+			else Condition.solutionFromList [(x, Var y)]
 		(Var v, t) -> ceqVar v t
 		(t, Var v) -> ceqVar v t
 		(App sym args, other) -> Condition.simple $ Eq prv sym args other

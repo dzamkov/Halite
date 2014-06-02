@@ -19,6 +19,7 @@ module Halisp.Condition (
 	simple,
 	simples,
 	solution,
+	solutionFromList,
 	map,
 	sub,
 	exists,
@@ -38,7 +39,6 @@ module Halisp.Condition (
 ) where
 
 import Prelude hiding (map, fmap)
-import Prelude.Extras (Ord1, Lift1 (..))
 import Halisp.Volume (Volume)
 import qualified Halisp.Volume as Volume
 import Data.Set (Set)
@@ -47,9 +47,10 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.List as List
 import Data.Maybe (fromJust)
+import Debug.Trace (trace)
 
 -- Identifies a type constructor for a formula, which includes both terms and constraints.
-class (Ord1 f) => Formula f where
+class Formula f where
 
 	-- Determines whether the given formula refers to (or depends on) any variable for
 	-- which the given predicate returns true.
@@ -67,6 +68,10 @@ class (Formula t) => Term r t where
 	-- Applies a substitution to the variables in a term.
 	tsub :: (Ord v, Ord n) => r -> (v -> t n) -> t v -> t n
 	
+-- Applies a substitution map to a term.
+tsubMap :: (Ord v, Term r t) => r -> Map v (t v) -> t v -> t v
+tsubMap context subs = tsub context (\v -> maybe (tvar context v) id $ Map.lookup v subs)
+
 -- Applies a substitution to a single variable in a term.
 tsubOne :: (Ord v, Term r t) => r -> v -> t v -> t v -> t v
 tsubOne context var target = tsub context (\v ->
@@ -81,6 +86,10 @@ class (Formula k, Term r t) => Constraint r k t where
 	-- (indistinguishable inside constraints).
 	ceq :: (Ord v) => r -> t v -> t v -> Condition k t v
 	
+-- Applies a substitution map to a constraint.
+csubMap :: (Ord v, Constraint r k t) => r -> Map v (t v) -> k v -> Condition k t v
+csubMap context subs = csub context (\v -> maybe (tvar context v) id $ Map.lookup v subs)
+
 -- Applies a substitution to a single variable in a constraint.
 csubOne :: (Ord v, Constraint r k t) => r -> v -> t v -> k v -> Condition k t v
 csubOne context var target = csub context (\v ->
@@ -95,59 +104,23 @@ data Condition k t v = Condition {
 	degree :: Int,
 
 	-- A volume representing the cases covered by a condition. The condition is satisifed
-	-- in some sub-volume of this volume if all substitutions and constraints that
-	-- intersect that sub-volume are satisfied.
+	-- in some sub-volume of this volume if all rules that intersect that sub-volume are
+	-- satisfied.
 	volume :: Volume,
 	
-	-- The set of substitutions that apply to a condition.
-	subs :: Map (v, Lift1 t (Either v Int)) Volume,
+	-- The rules (substitutions and constraints) for this volume, associated with the
+	-- volumes they affect.
+	rules :: [(Volume, Map v (t (Either v Int)), [k (Either v Int)])] }
 	
-	-- The set of constraints that apply to a condition.
-	cons :: Map (Lift1 k (Either v Int)) Volume }
-	
--- Makes a condition with exactly the given data.
-make :: (Ord v, Ord1 t, Ord1 k) => Int -> Volume
-	-> [(v, t (Either v Int), Volume)]
-	-> [(k (Either v Int), Volume)]
-	-> Condition k t v
-make degree volume subs cons = Condition {
-	degree = degree, volume = volume,
-	subs = Map.fromList $ List.map (\(v, t, u) -> ((v, Lift1 t), u)) $ subs,
-	cons = Map.fromList $ List.map (\(c, v) -> (Lift1 c, v)) $ cons }
-	
--- Makes a simple (one-case) condition with exactly the given data.
-makeSimple :: (Ord v, Ord1 t, Ord1 k) => Int
-	-> [(v, t (Either v Int))] 
-	-> [(k (Either v Int))]
-	-> Condition k t v
-makeSimple degree subs cons = Condition {
-	degree = degree, volume = Volume.single,
-	subs = Map.fromList $ List.map (\(v, t) -> ((v, Lift1 t), Volume.single)) $ subs,
-	cons = Map.fromList $ List.map (\c -> (Lift1 c, Volume.single)) $ cons }
-
-instance (Show v, Show (k (Either v Int)), Show (t (Either v Int))) 
-	=> Show (Condition k t v) where
-	showsPrec _ cond | isAlways cond = ("always" ++ )
-	showsPrec _ cond | isNever cond = ("never" ++)
-	showsPrec 11 cond = ("(" ++) . showsPrec 0 cond . (")" ++)
-	showsPrec _ cond | isSimple cond = res where
-		isSimple cond = 
-			Map.foldl (\a v -> a && v == volume cond) True (subs cond) &&
-			Map.foldl (\a v -> a && v == volume cond) True (cons cond)
-		res = ("makeSimple " ++) . showsPrec 11 (degree cond) . (" " ++) .
-			showsPrec 11 (List.map (\((v, lower1 -> t), u) -> 
-				(v, t)) $ Map.toList $ subs cond) . (" " ++) .
-			showsPrec 11 (List.map (\(lower1 -> c, v) -> c) $ Map.toList $ cons cond)
-	showsPrec _ cond = ("make " ++) . showsPrec 11 (degree cond) . (" " ++) .
-		showsPrec 11 (volume cond) . (" " ++) .
-		showsPrec 11 (List.map (\((v, lower1 -> t), u) -> 
-			(v, t, u)) $ Map.toList $ subs cond) . (" " ++) .
-		showsPrec 11 (List.map (\(lower1 -> c, v) -> (c, v)) $ Map.toList $ cons cond)
+deriving instance (Show v, Show (t (Either v Int)), Show (k (Either v Int)))
+	=> Show (Condition k t v)
 
 -- TODO: Prevent overflow of existential variables. 'degree' should not grow without
 -- bound.
 
--- VOCAB: a rule is a constraint or substitution.
+-- VOCAB: a rule is a constraint or substitution. A constraint is some restriction on the
+-- values of variables (which stand in for terms). A substitution is an assignment of a
+-- variable to a term. 
 
 -- Rules for condition normalization:
 -- 1. If a substitution intersects another rule, that rule must not refer to the variable
@@ -155,142 +128,151 @@ instance (Show v, Show (k (Either v Int)), Show (t (Either v Int)))
 -- 2. The volume for a rule may not be empty.
 -- 3. For any volume in a condition, there must not exist another volume whose contained
 --    rules are a proper subset of the first volume's.
+-- 4. Every entry in 'rules' must have a substitution or a constraint (no empty).
 
 -- Optimizes the internal volumes of a condition.
 optimize :: Condition k t v -> Condition k t v
 optimize cond = res where
-	volumes = (Map.elems $ subs cond) ++ (Map.elems $ cons cond)
+	volumes = List.map (\(v, _, _) -> v) $ rules cond
 	(nVolume, proj) = Volume.optimize (volume cond) volumes
 	res = Condition {
-		degree = degree cond,
-		volume = nVolume,
-		subs = Map.map proj $ subs cond,
-		cons = Map.map proj $ cons cond }
-		
--- Inserts a substitution into a substitution map, preserving normalization rule 1. If the
--- substitution conflicts with an existing substitution, an equivalence condition is
--- created and inserted into a given list.
-insertSub :: (Ord v, Constraint r k t) => r
-	-> (Map (v, Lift1 t v) Volume, [(Condition k t v, Volume)])
-	-> (v, t v, Volume)
-	-> (Map (v, Lift1 t v) Volume, [(Condition k t v, Volume)])
-insertSub context (subs, conds) (var, term, volume) = res where
-	checkSub accum@(volume, aSubs, conds) (oVar, lower1 -> oTerm) oVolume = res where
-		intersection = Volume.intersection volume oVolume
-		resI = case (var == oVar, frefers (== oVar) term, frefers (== var) oTerm) of
-			(True, _, _) -> ((Volume.difference volume oVolume, aSubs, 
-				(ceq context term oTerm, intersection) : conds), oVolume)
-			(False, True, True) -> ((Volume.difference volume oVolume, aSubs,
-				(ceq context (tvar context var) (tsubOne context oVar oTerm term),
-				intersection) : conds), oVolume)
-			(False, False, True) -> ((volume, (oVar, tsubOne context var term oTerm,
-				intersection) : aSubs, conds), Volume.difference oVolume volume)
-			(False, True, False) -> ((Volume.difference volume oVolume, (var, tsubOne
-				context oVar oTerm term, intersection) : aSubs, conds), oVolume)
-			(False, False, False) -> ((volume, aSubs, conds), oVolume)
-		res = if Volume.null intersection then (accum, oVolume) else resI
-	((nVolume, aSubs, nConds), nSubs'') =
-		Map.mapAccumWithKey checkSub (volume, [], conds) subs
-	nSubs' = Map.insertWith Volume.union (var, Lift1 term) nVolume nSubs''
-	nSubs = List.foldl (\subs (var, term, vol) ->
-		Map.insertWith Volume.union (var, Lift1 term) vol subs) nSubs' aSubs
-	res = (nSubs, nConds)
+		degree = degree cond, volume = nVolume,
+		rules = List.map (\(v, s, c) -> (proj v, s, c)) $ rules cond }
 
--- Inserts a constraint into a constraint map, preserving normalizaation rules 1 and 2.
-insertCon :: (Ord v, Constraint r k t) => r
-	-> Map (v, Lift1 t v) Volume
-	-> ([(k v, Volume)], [(Condition k t v, Volume)])
-	-> (k v, Volume)
-	-> ([(k v, Volume)], [(Condition k t v, Volume)])
-insertCon context subs (cons, conds) (con, volume) = res where
-	checkCon accum@(volume, conds) (oVar, lower1 -> oTerm) oVolume = res where
-		intersection = Volume.intersection volume oVolume
-		resI = if frefers (== oVar) con
-			then (Volume.difference volume oVolume,
-				(csubOne context oVar oTerm con, intersection) : conds)
-			else accum
-		res = if Volume.null intersection then accum else resI
-	(nVolume, nConds) = Map.foldlWithKey checkCon (volume, conds) subs
-	nCons = if Volume.null nVolume then cons else (con, nVolume) : cons
-	res = (nCons, nConds)
+-- Inserts a set of rules (all associated with the same volume) into a rule set while
+-- preserving normalization rules 1, 2 and 4. The given rules must all be independent (not
+-- refer to any variable assigned in a given substitution). Note that some conflicts 
+-- during insertion can only be resolved by applying a condition, which are returned along
+-- with the rules.
+insertRules :: (Ord v, Constraint r k t) => r
+	-> [(Volume, Map v (t v), [k v], Condition k t v)]
+	-> (Volume, Map v (t v), [k v])
+	-> [(Volume, Map v (t v), [k v], Condition k t v)]
+insertRules context rules part@(sVolume, sSubs, sCons) = res where
+	memberOf map val = Map.member val map
+	checkRules accum@(rules, parts) (oVolume, oSubs, oCons, oCond) = res where
+		eVolume = Volume.intersection oVolume sVolume
+		doVolume = Volume.difference oVolume eVolume
+		commonSubs = Map.intersectionWith (ceq context) sSubs oSubs
+		eConds'' = Map.elems commonSubs
+		usSubs = Map.difference sSubs commonSubs
+		(ioSubs, doSubs) = Map.partition (frefers $ memberOf usSubs) oSubs
+		(isSubs, dsSubs) = Map.partition (frefers $ memberOf oSubs) usSubs
+		insertSub (subs, conds) var value = res where
+			nValue = tsubMap context subs value
+			nSubs = Map.insert var nValue $ Map.map (tsubOne context var nValue) subs
+			nConds = ceq context (tvar context var) nValue : conds
+			res = if frefers (== var) nValue then (subs, nConds) else (nSubs, conds)
+		(eSubs', eConds') = Map.foldlWithKey insertSub (doSubs, eConds'') dsSubs
+		eSubs = Map.map (tsubMap context (Map.unionWith undefined ioSubs isSubs)) eSubs'
+		(ioCons, doCons) = List.partition (frefers $ memberOf usSubs) oCons
+		dsCons = List.filter (frefers $ memberOf oSubs) sCons
+		eConds = List.foldl (\a c -> csubMap context eSubs c : a)
+			eConds' (doCons ++ dsCons)
+		nRules = 
+			(if Volume.null doVolume || (Map.null doSubs && List.null doCons) then id
+				else ((doVolume, doSubs, doCons, always) :)) $
+			(if Map.null eSubs && List.null eConds then id
+				else ((eVolume, eSubs, [], conjunction context eConds) :)) $
+			(if Map.null ioSubs && List.null ioCons && isAlways oCond then id
+				else ((oVolume, ioSubs, ioCons, oCond) :)) $ rules
+		checkParts parts (pVolume, pSubs, pCons) = res where
+			dpVolume = Volume.difference pVolume eVolume
+			(ipSubs, dpSubs) = Map.partition (frefers $ memberOf oSubs) pSubs
+			(ipCons, dpCons) = List.partition (frefers $ memberOf oSubs) pCons
+			res =
+				(if Volume.null dpVolume || (Map.null dpSubs && List.null dpCons) then id
+					else ((dpVolume, dpSubs, dpCons) :)) $
+				(if Map.null ipSubs && List.null ipCons then id
+					else ((pVolume, ipSubs, ipCons) :)) $ parts
+		nParts = List.foldl checkParts [] parts
+		res = if Volume.null eVolume then accum else (nRules, nParts)
+	(nRules, nParts) = List.foldl checkRules ([], [part]) rules
+	res = List.foldl (\a (v, s, c) -> (v, s, c, always) : a) nRules nParts
 
--- Breaks a condition (occupying a volume) down into substitutions and constraints.
-deconstruct :: (Ord v, Formula k, Formula t)
-	=> (Int, Volume, Volume -> Volume, 
-		[((Either v Int), t (Either v Int), Volume)], [(k (Either v Int), Volume)])
-	-> (Condition k t (Either v Int), Volume)
-	-> (Int, Volume, Volume -> Volume, 
-		[((Either v Int), t (Either v Int), Volume)], [(k (Either v Int), Volume)])
-deconstruct state (cond, _) | isAlways cond = state
-deconstruct (degree, full, proj, subs, cons) (cond, volume') | isNever cond = res where
-	pVolume = proj volume'
-	(nFull, passProj) = Volume.cut full pVolume
-	nProj = passProj . proj
-	nSubs = List.map (\(a, b, v) -> (a, b, passProj v)) subs
-	nCons = List.map (\(a, v) -> (a, passProj v)) cons
-	res = (degree, nFull, nProj, nSubs, nCons)
-deconstruct (degree', full, proj, subs', cons') (cond, volume') = res where
-	nDegree = degree' + degree cond
-	offsetVar (Left x) = x
-	offsetVar (Right x) = Right (degree' + x)
-	pVolume = proj volume'
-	(nFull, innerProj, passProj) = Volume.refine full pVolume (volume cond)
-	nProj = passProj . proj
-	nSubs' = List.map (\(a, b, v) -> (a, b, passProj v)) subs'
-	nCons' = List.map (\(a, v) -> (a, passProj v)) cons'
-	nSubs = Map.foldlWithKey (\a (v, lower1 -> t) u -> 
-		(v, fmap offsetVar t, innerProj u) : a) nSubs' (subs cond)
-	nCons = Map.foldlWithKey (\a (lower1 -> c) v -> 
-		(fmap offsetVar c, innerProj v) : a) nCons' (cons cond)
-	res = (nDegree, nFull, nProj, nSubs, nCons)
+-- Converts a rule set with conditions into a rule set without conditions, and a set of
+-- amendments to the rule set.
+applyConditions :: (Ord v, Formula k, Formula t)
+	=> Int -> Volume 
+	-> [(Volume, Map (Either v Int) (t (Either v Int)),
+		[k (Either v Int)], Condition k t (Either v Int))]
+	-> (Int, Volume, 
+		[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])], 
+		[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])])
+applyConditions degree' volume' rules' = res where
+	applyCondition
+		accum@(degree', volume', proj, rules', ammends)
+		rule@(rVolume, rSubs, rCons, rCond) = res where
+			prVolume = proj rVolume
+			applyProj proj = List.foldl (\a (v, s, c) -> case v of
+				(Volume.null -> True) -> a
+				nV -> (nV, s, c) : a) []
+			applyNever = res where
+				(nVolume, passProj) = Volume.cut volume' prVolume
+				nRules = applyProj passProj rules'
+				nAmmends = applyProj passProj ammends
+				res = (degree', nVolume, passProj . proj, nRules, nAmmends)
+			applyNormal cond = res where
+				nDegree = degree' + degree rCond
+				offsetVar (Left x) = x
+				offsetVar (Right x) = Right (degree' + x)
+				(nVolume, innerProj, passProj) = 
+					Volume.refine volume' prVolume (volume rCond)
+				nRules' = applyProj passProj rules'
+				nRules = (prVolume, rSubs, rCons) : nRules'
+				nAmmends' = applyProj passProj ammends
+				nAmmends = List.foldl (\a (v, s, c) -> (innerProj v, 
+					Map.map (fmap offsetVar) s, 
+					List.map (fmap offsetVar) c) : a) nAmmends' (rules cond)
+				res = (nDegree, nVolume, passProj . proj, nRules, nAmmends)
+			res = if Volume.null prVolume then accum else case rCond of
+				(isAlways -> True) -> (degree', volume', proj, 
+					(prVolume, rSubs, rCons) : rules', ammends)
+				(isNever -> True) -> applyNever
+				cond -> applyNormal cond
+	(nDegree, nVolume, _, nRules, nAmmends) =
+		List.foldl applyCondition (degree', volume', id, [], []) rules'
+	res = (nDegree, nVolume, nRules, nAmmends)
 
 -- Removes sub-volumes from a condition in order to make it satisfy normalization rule 3.
-prune :: Int -> Volume -> Map (v, Lift1 t (Either v Int)) Volume
-	-> Map (Lift1 k (Either v Int)) Volume -> Condition k t v
-prune degree volume subs cons = optimize $ Condition {
-	degree = degree, volume = volume,
-	subs = subs, cons = cons } -- TODO
-
--- Constructs a condition by merging a substitution map (obeying normalization rule 1),
--- a set of substitutions, a set of constraints, and a set of conditions.
-construct :: (Ord v, Constraint r k t) => r -> Int -> Volume
-	-> Map (Either v Int, Lift1 t (Either v Int)) Volume
-	-> [(Either v Int, t (Either v Int), Volume)]
-	-> [(k (Either v Int), Volume)]
-	-> [(Condition k t (Either v Int), Volume)]
+prune :: Int -> Volume
+	-> [(Volume, Map v (t (Either v Int)), [k (Either v Int)])]
 	-> Condition k t v
-construct context degree volume subs aSubs aCons aConds = res where
-	(nDegree, nVolume, proj, naSubs, naCons) =
-		List.foldl deconstruct (degree, volume, id, aSubs, aCons) aConds
-	nSubs'' = Map.map proj subs
-	(nSubs', naConds1) = List.foldl (insertSub context) (nSubs'', []) naSubs
-	nSubs = Map.filter (not . Volume.null) nSubs'
-	(nCons, naConds2) = List.foldl (insertCon context nSubs) ([], []) naCons
-	lefts = Map.mapKeysMonotonic (\(v, t) -> (either id undefined v, t)) .
-		Map.filterWithKey (\(v, _) _ -> either (const True) (const False) v)
-	fromListLift1 = Map.fromList . List.map (\(c, v) -> (Lift1 c, v))
-	res = if List.null naConds1
-		then (if List.null naConds2
-			then prune nDegree nVolume (lefts nSubs) (fromListLift1 nCons)
-			else construct context nDegree nVolume nSubs [] nCons naConds2)
-		else construct context nDegree nVolume nSubs [] naCons naConds1
+prune degree volume rules = optimize $ Condition {
+	degree = degree, volume = volume,
+	rules = rules } -- TODO
+
+-- Constructs a condition by merging a rule set (with conditions), and a set of rules
+-- into a single condition.
+construct :: (Ord v, Constraint r k t)
+	=> r -> Int -> Volume
+	-> [(Volume, Map (Either v Int) (t (Either v Int)),
+		[k (Either v Int)], Condition k t (Either v Int))]
+	-> [(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])]
+	-> Condition k t v
+construct context degree volume rules ammends = res where
+	nRules = List.foldl (insertRules context) rules ammends
+	(nDegree, nVolume, fRules, nAmmends) = applyConditions degree volume nRules
+	isLeft = either (const True) (const False)
+	leftSubs = List.foldl (\a (v, s, c) -> case Map.filterWithKey (\k _ -> isLeft k) s of
+		(Map.null -> True) -> if List.null c then a else (v, Map.empty, c) : a
+		nS' -> (v, Map.mapKeysMonotonic (either id undefined) nS', c) : a) []
+	augConds = List.map (\(v, s, c) -> (v, s, c, always))
+	res = if List.null nAmmends
+		then prune nDegree nVolume (leftSubs fRules)
+		else construct context nDegree nVolume (augConds fRules) nAmmends
 
 -- A condition that is always satisfied.
 always :: Condition k t v
-always = Condition {
-	degree = 0, volume = Volume.single,
-	subs = Map.empty, cons = Map.empty }
+always = Condition { degree = 0, volume = Volume.single, rules = [] }
 	
 -- A condition that is never satisfied.
 never :: Condition k t v
-never = Condition {
-	degree = 0, volume = Volume.empty,
-	subs = Map.empty, cons = Map.empty }
+never = Condition { degree = 0, volume = Volume.empty, rules = [] }
 
 -- Determines whether the given condition is always satisfied.
 isAlways :: Condition k t v -> Bool
-isAlways cond = not (Volume.null $ volume cond)
-	&& Map.null (subs cond) && Map.null (cons cond)
+isAlways cond = not (Volume.null $ volume cond) && List.null (rules cond)
 
 -- Determines whether the given condition is never satisfied.
 isNever :: Condition k t v -> Bool
@@ -299,35 +281,33 @@ isNever cond = Volume.null $ volume cond
 -- Constructs a condition that is satisfied exactly when the given constraint is
 -- satisfied.
 simple :: (Ord v, Formula k) => k v -> Condition k t v
-simple con = Condition {
-	degree = 0, volume = Volume.single,
-	subs = Map.empty, cons = Map.singleton (Lift1 $ fmap Left con) Volume.single }
+simple con = simples [con]
 
 -- Constructs a condition that is satisfied exactly when all of the given constraints are
 -- satisfied.
 simples :: (Ord v, Formula k) => [k v] -> Condition k t v
-simples cons = Condition {
-	degree = 0, volume = Volume.single,
-	subs = Map.empty, cons = Map.fromList $ List.map (\c ->
-		(Lift1 $ fmap Left c, Volume.single)) cons }
+simples cons = Condition { degree = 0, volume = Volume.single,
+	rules = [(Volume.single, Map.empty, List.map (fmap Left) cons)] }
 
 -- Constructs a condition that is satisfied exactly when the given substitution is in
 -- effect.
-solution :: (Ord v, Formula t) => [(v, t v)] -> Condition k t v
-solution subs = Condition {
-	degree = 0, volume = Volume.single,
-	subs = Map.fromList $ List.map (\(v, t) ->
-		((v, Lift1 $ fmap Left t), Volume.single)) subs,
-	cons = Map.empty }
+solution :: (Ord v, Formula t) => Map v (t v) -> Condition k t v
+solution subs = Condition { degree = 0, volume = Volume.single,
+	rules = [(Volume.single, Map.map (fmap Left) subs, [])] }
+
+-- Constructs a condition that is satisfied exactly when the given substitution is in
+-- effect.
+solutionFromList :: (Ord v, Formula t) => [(v, t v)] -> Condition k t v
+solutionFromList subs = solution $ Map.fromList subs
 
 -- Applies a one-to-one mapping to the variables in a condition.
 map :: (Ord v, Ord n, Formula k, Formula t) => (v -> n)
 	-> Condition k t v -> Condition k t n
 map m cond = res where
 	mIn = either (Left . m) Right
-	res = cond {
-		subs = Map.mapKeys (\(v, lower1 -> t) -> (m v, Lift1 $ fmap mIn t)) $ subs cond,
-		cons = Map.mapKeys (Lift1 . fmap mIn . lower1) $ cons cond }
+	res = cond { rules = List.map (\(v, s, c) ->
+		(v, Map.mapKeys m $ Map.map (fmap mIn) s, 
+		List.map (fmap mIn) c)) $ rules cond }
 		
 -- Applies a substitution to a constraint.
 sub :: (Ord v, Ord n, Constraint r k t) => r -> (v -> t n)
@@ -335,11 +315,11 @@ sub :: (Ord v, Ord n, Constraint r k t) => r -> (v -> t n)
 sub context m cond = res where
 	mapVar (Left x) = fmap Left $ m x
 	mapVar (Right x) = tvar context (Right x)
-	conds' = Map.foldlWithKey (\a (v, lower1 -> t) u ->
-		(ceq context (fmap Left $ m v) (tsub context mapVar t), u) : a) [] (subs cond)
-	conds = Map.foldlWithKey (\a (lower1 -> c) v ->
-		(csub context mapVar c, v) : a) conds' (cons cond)
-	res = construct context (degree cond) (volume cond) Map.empty [] [] conds
+	nRules = List.map (\(v, s, c) -> (v, Map.empty, [],
+		conjunction context (Map.foldlWithKey (\a v t ->
+			ceq context (fmap Left $ m v) (tsub context mapVar t) : a)
+			(List.map (csub context mapVar) c) s))) $ rules cond
+	res = construct context (degree cond) (volume cond) nRules []
 	
 -- Existentially quantifies the given variables within the given condition.
 exists :: (Ord v, Formula k, Formula t) => Set v -> Condition k t v -> Condition k t v
@@ -381,23 +361,29 @@ existsRightInt bound cond = res where
 	mapVar (Left (Left x)) = Left x
 	mapVar (Left (Right x)) = Right (degree cond + x)
 	mapVar (Right x) = Right x
-	nSubs = Map.mapKeys (\(v, lower1 -> t) -> 
-		(either id undefined v, Lift1 $ fmap mapVar t)) $
-		Map.filterWithKey (\(v, _) _ -> either (const True) (const False) v) (subs cond)
-	nCons = Map.mapKeys (Lift1 . fmap mapVar . lower1) (cons cond)
-	res = if Map.size nSubs < Map.size (subs cond)
-		then prune (degree cond + bound) (volume cond) nSubs nCons
-		else Condition { degree = degree cond + bound, volume = volume cond,
-			subs = nSubs, cons = nCons }
+	lefts = Map.mapKeysMonotonic (either id undefined) .
+		Map.filterWithKey (\k _ -> either (const True) (const False) k)
+	(nRules, anyRemoved) = List.foldl (\(rules, anyRemoved) (v, s, c) ->
+		case (lefts s, c) of
+			(Map.null -> True, []) -> (rules, True)
+			(subs, cons) -> ((v, Map.map (fmap mapVar) subs,
+				List.map (fmap mapVar) cons) : rules, anyRemoved))
+		([], False) $ rules cond
+	res = if anyRemoved then prune (degree cond + bound) (volume cond) nRules
+		else Condition { degree = degree cond + bound,
+			volume = volume cond, rules = nRules }
 
 -- Computes the conjunction of many conditions.
 conjunction :: (Ord v, Constraint r k t) => r -> [Condition k t v] -> Condition k t v
 conjunction _ [] = always
-conjunction context conds = construct context 0 Volume.single Map.empty [] [] $
-	List.map (\c -> (map Left c, Volume.single)) conds
+conjunction context (head : []) = head
+conjunction context (head : tail) = construct context (degree head) (volume head)
+	((List.foldl (\a cond -> (volume head, Map.empty, [], map Left cond) : a) $
+	List.map (\(v, s, c) -> (v, Map.mapKeysMonotonic Left s, c, always)) $
+	rules head) tail) []
 
 -- Computes the disjunction of many conditions.
-disjunction :: (Ord v, Ord1 t, Ord1 k) => [Condition k t v] -> Condition k t v
+disjunction :: (Ord v) => [Condition k t v] -> Condition k t v
 disjunction [] = never
 disjunction (cond : _) | isAlways cond = always
 disjunction (cond : rem) | isNever cond = disjunction rem
@@ -405,17 +391,17 @@ disjunction (cond : rem) = res where
 	pushCondition Nothing _ = Nothing
 	pushCondition (Just state) cond | isNever cond = Just state
 	pushCondition (Just _) cond | isAlways cond = Nothing
-	pushCondition (Just (degree', volume', subs', cons')) cond = res where
+	pushCondition (Just (degree', volume', rules')) cond = res where
 		nDegree = max degree' (degree cond)
 		(nVolume, lProj, rProj) = Volume.sum volume' (volume cond)
-		nSubs = Map.unionWith undefined (Map.map lProj subs') (Map.map rProj $ subs cond)
-		nCons = Map.unionWith undefined (Map.map lProj cons') (Map.map rProj $ cons cond)
-		res = Just (nDegree, nVolume, nSubs, nCons)
-	state = Just (degree cond, volume cond, subs cond, cons cond)
+		insertRules m accum (v, s, c) = (m v, s, c) : accum
+		nRules' = List.foldl (insertRules lProj) [] rules'
+		nRules = List.foldl (insertRules rProj) nRules' $ rules cond
+		res = Just (nDegree, nVolume, nRules)
+	state = Just (degree cond, volume cond, rules cond)
 	res = case List.foldl pushCondition state rem of
-		Just (nDegree, nVolume, nSubs, nCons) -> Condition {
-			degree = nDegree, volume = nVolume,
-			subs = nSubs, cons = nCons }
+		Just (nDegree, nVolume, nRules) -> Condition {
+			degree = nDegree, volume = nVolume, rules = nRules }
 		Nothing -> always
 
 -- Constructs a condition that is satisfied exactly when both of the given conditions
@@ -428,7 +414,7 @@ infixl 3 &&^
 -- Constructs a condition that is satisfied exactly when either of the given conditions
 -- are satisfied.
 infixl 2 ||^
-(||^) :: (Ord v, Ord1 t, Ord1 k)
+(||^) :: (Ord v)
 	=> Condition k t v -> Condition k t v -> Condition k t v
 (||^) x y = disjunction [x, y]
 
@@ -440,20 +426,23 @@ infix 4 ==^
 -- Refines the constraints in a condition.
 bind :: (Ord v, Constraint r k t) => r -> (forall n. (Ord n) => k n -> Condition k t n)
 	-> Condition k t v -> Condition k t v
-bind context m cond = res where
-	res = construct context (degree cond) (volume cond)
-		(Map.mapKeysMonotonic (\(v, t) -> (Left v, t)) $ subs cond)
-		[] [] $ Map.foldlWithKey (\a (lower1 -> c) v -> (m c, v) : a) [] $ cons cond
+bind context m cond = construct context (degree cond) (volume cond)
+	(List.map (\(v, s, c) -> (v, Map.mapKeysMonotonic Left s, [],
+		conjunction context $ List.map m c)) (rules cond)) []
+
+
+-- Gets the volume of a condition is affected by constraints.
+constraintVolume :: Condition k t v -> Volume
+constraintVolume cond = List.foldl (\a (v, _, c) -> if List.null c then a
+	else Volume.union a v) Volume.empty $ rules cond
 		
 -- Filters a condition to only include the given sub-volume.
-filterVolume :: (Ord v) => Condition k t v -> Volume -> Condition k t v
-filterVolume cond volume' = res where
-	differenceOrNothing volume = res where
-		nVolume = Volume.difference volume volume'
-		res = if Volume.null nVolume then Nothing else Just nVolume
-	res = cond { volume = volume',
-		subs = Map.mapMaybe differenceOrNothing $ subs cond,
-		cons = Map.mapMaybe differenceOrNothing $ cons cond }
+filterVolume :: Condition k t v -> Volume -> Condition k t v
+filterVolume cond volume' = cond { volume = volume', rules = List.foldl (\a (v, s, c) ->
+	case Volume.difference v volume' of
+		(Volume.null -> True) -> a
+		nV -> (nV, s, c) : a) [] $ rules cond }
+
 
 -- Reinterprets the given condition as a disjunction of a maximal set of solutions and
 -- a non-solution condition. Note that returned solutions can reference existentially-
@@ -462,17 +451,18 @@ extract :: (Ord v) => Condition k t v -> ([Map v (t (Either v Int))], Condition 
 extract cond | isAlways cond = ([Map.empty], never)
 extract cond | isNever cond = ([], never)
 extract cond = res where
-	cVolume = Map.foldl Volume.union Volume.empty $ cons cond
+	cVolume = constraintVolume cond
 	sVolume = Volume.difference (volume cond) cVolume
-	refine accum (var, lower1 -> term) volume = res where
-		refineOne accum (subs, vol) = nAccum where
-			intersection = Volume.intersection vol volume
-			difference = Volume.difference vol volume
-			nAccum = if Volume.null intersection then (subs, volume) : accum
-				else (Map.insert var term subs, intersection) : (if Volume.null difference
-					then accum else (subs, difference) : accum)
+	refine accum (oVolume, oSubs, _) = res where
+		refineOne accum (sVolume, sSubs) = nAccum where
+			intersection = Volume.intersection sVolume oVolume
+			difference = Volume.difference sVolume intersection
+			nAccum = if Volume.null intersection then (sVolume, sSubs) : accum
+				else (intersection, Map.unionWith undefined oSubs sSubs) :
+					(if Volume.null difference then accum 
+					else (difference, sSubs) : accum)
 		res = List.foldl refineOne [] accum
-	solutions = List.map fst $ Map.foldlWithKey refine [(Map.empty, sVolume)] $ subs cond
+	solutions = List.map snd $ List.foldl refine [(sVolume, Map.empty)] $ rules cond
 	nCond = filterVolume cond cVolume
 	res = (solutions, nCond)
 	
@@ -487,4 +477,4 @@ extractToList cond = res where
 
 -- Determines whether the given condition has a solution.
 isSolvable :: (Ord v) => Condition k t v -> Bool
-isSolvable cond = not $ List.null $ fst $ extract cond
+isSolvable cond = not (Volume.contains (constraintVolume cond) (volume cond))
