@@ -21,12 +21,14 @@ module Halisp.Condition (
 	simples,
 	solution,
 	solutionFromList,
+	vars,
 	map,
 	sub,
 	exists,
 	existsFromList,
 	existsRight,
-	existsRightFromList,
+	existsRightWith,
+	existsRightWithFromList,
 	existsRightInt,
 	conjunction,
 	disjunction,
@@ -53,9 +55,13 @@ import Debug.Trace (trace)
 -- Identifies a type constructor for a formula, which includes both terms and constraints.
 class Formula f where
 
+	-- Gets the complete set of variables referenced in a formula.
+	fvars :: (Ord v) => f v -> Set v
+	
 	-- Determines whether the given formula refers to (or depends on) any variable for
 	-- which the given predicate returns true.
 	frefers :: (Ord v) => (v -> Bool) -> f v -> Bool
+	frefers m f = List.any m $ Set.toList $ fvars f
 	
 	-- Applies a one-to-one mapping to the variables in a formula.
 	fmap :: (Ord v, Ord n) => (v -> n) -> f v -> f n
@@ -341,6 +347,18 @@ solution subs = Condition { degree = 0, region = Region.single,
 solutionFromList :: (Ord v, Formula t) => [(v, t v)] -> Condition k t v
 solutionFromList subs = solution $ Map.fromList subs
 
+-- Gets all of the variables referenced in a condition.
+vars :: (Ord v, Formula k, Formula t) => Condition k t v -> Set v
+vars cond = res where
+	fvarsLeft :: (Ord a, Ord b, Formula f) => f (Either a b) -> Set a
+	fvarsLeft = Set.mapMonotonic (either id undefined) .
+		Set.filter (either (const True) (const False)) . fvars
+	checkRules accum (v, s, c) = res where
+		nAccum' = List.foldl (\a c -> Set.union a $ fvarsLeft c) accum c
+		res = Map.foldlWithKey (\a v t -> Set.insert v $ Set.union a $ fvarsLeft t)
+			nAccum' s
+	res = List.foldl checkRules Set.empty $ rules cond
+
 -- Applies a one-to-one mapping to the variables in a condition.
 map :: (Ord v, Ord n, Formula k, Formula t) => (v -> n)
 	-> Condition k t v -> Condition k t n
@@ -378,17 +396,23 @@ existsFromList vars cond = res where
 		Nothing -> Left v
 	res = existsRightInt bound (map mapVar cond)
 	
--- Existentially quantifies all right variables (which must be enumerated) within the
--- given condition.
-existsRight :: (Ord v, Ord n, Formula k, Formula t) => Set n
-	-> Condition k t (Either v n) -> Condition k t v
-existsRight vars cond = existsRightFromList (Set.toList vars) cond
+-- Existentially quantifies all right variables  within the given condition.
+existsRight :: (Ord v, Ord n, Formula k, Formula t)
+	=> Condition k t (Either v n) -> Condition k t v
+existsRight cond = existsRightWith (Set.mapMonotonic (either undefined id) $
+	Set.filter (either (const False) (const True)) $ vars cond) cond
 	
 -- Existentially quantifies all right variables (which must be enumerated) within the
 -- given condition.
-existsRightFromList :: (Ord v, Ord n, Formula k, Formula t) => [n]
+existsRightWith :: (Ord v, Ord n, Formula k, Formula t) => Set n
 	-> Condition k t (Either v n) -> Condition k t v
-existsRightFromList vars cond = res where
+existsRightWith vars cond = existsRightWithFromList (Set.toList vars) cond
+	
+-- Existentially quantifies all right variables (which must be enumerated) within the
+-- given condition.
+existsRightWithFromList :: (Ord v, Ord n, Formula k, Formula t) => [n]
+	-> Condition k t (Either v n) -> Condition k t v
+existsRightWithFromList vars cond = res where
 	(vMap, bound) = List.foldl
 		(\(m, b) v -> (Map.insert v b m, b + 1))
 		(Map.empty, 0) vars	
@@ -486,13 +510,29 @@ filterRegion cond region' = cond { region = region', rules = List.foldl (\a (v, 
 		(Region.null -> True) -> a
 		nV -> (nV, s, c) : a) [] $ rules cond }
 
+-- Converts a solution with free and quantified variables into a solution with only
+-- quantified variables.
+fixSolution :: (Ord v, Term r t) => r -> Int
+	-> Map v (t (Either v Int)) -> (Int, Map v (t Int))
+fixSolution context degree sol = res where
+	vars = Map.foldl (\a t -> Set.union a $ fvars t) Set.empty sol
+	(varMap, nDegree) = Set.foldl (\(m, d) v -> case v of
+		Left vL -> (Map.insert vL d m, d + 1)
+		Right _ -> (m, d)) (Map.empty, degree) vars
+	nSol' = Map.map (fmap $ either ((Map.!) varMap) id) sol
+	nSol = Map.unionWith undefined nSol' $ Map.map (tvar context) varMap
+	res = (nDegree, nSol)
+	
+		
+		
 -- Reinterprets the given condition as a disjunction of a maximal set of solutions and
 -- a non-solution condition. Note that returned solutions can reference existentially-
 -- quantified variables.
-extract :: (Ord v) => Condition k t v -> ([Map v (t (Either v Int))], Condition k t v)
-extract cond | isAlways cond = ([Map.empty], never)
-extract cond | isNever cond = ([], never)
-extract cond = res where
+extract :: (Ord v, Term r t) => r -> Condition k t v
+	-> ([(Int, Map v (t Int))], Condition k t v)
+extract _ cond | isAlways cond = ([(0, Map.empty)], never)
+extract _ cond | isNever cond = ([], never)
+extract context cond = res where
 	cRegion = constraintRegion cond
 	sRegion = Region.difference (region cond) cRegion
 	refine accum (oRegion, oSubs, _) = res where
@@ -506,17 +546,18 @@ extract cond = res where
 					(if Region.null difference then id
 					else ((difference, sSubs) :)) $ accum
 		res = List.foldl refineOne [] accum
-	solutions = List.map snd $ List.foldl refine [(sRegion, Map.empty)] $ rules cond
+	solutions = List.map (fixSolution context (degree cond) . snd) $ 
+		List.foldl refine [(sRegion, Map.empty)] $ rules cond
 	nCond = filterRegion cond cRegion
 	res = (solutions, nCond)
 	
 -- Reinterprets the given condition as a disjunction of a maximal set of solutions and
 -- a non-solution condition.
-extractToList :: (Ord v) => Condition k t v
-	-> ([[(v, t (Either v Int))]], Condition k t v)
-extractToList cond = res where
-	(subs, nCond) = extract cond
-	nSubs = List.map Map.toList subs
+extractToList :: (Ord v, Term r t) => r -> Condition k t v
+	-> ([(Int, [(v, t Int)])], Condition k t v)
+extractToList context cond = res where
+	(subs, nCond) = extract context cond
+	nSubs = List.map (\(d, s) -> (d, Map.toList s)) subs
 	res = (nSubs, nCond)
 
 -- Determines whether the given condition has a solution.

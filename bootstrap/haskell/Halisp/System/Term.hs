@@ -31,7 +31,7 @@ app c sym args = Internal.reduce c sym args
 refers = Internal.trefers
 map = Internal.tmap
 vars :: (Ord v) => Term v -> Set v
-vars = Internal.tvars
+vars = Condition.fvars
 sub :: (Ord v, Ord n) => Internal.Context -> (v -> Term n) -> Term v -> Term n
 sub c m t = Condition.tsub c m t
 

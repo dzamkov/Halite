@@ -9,7 +9,6 @@ module Halisp.System.Internal (
 	reduce,
 	trefers,
 	tmap,
-	tvars,
 	summary,
 	getMainOps,
 	getSymmOp,
@@ -54,6 +53,12 @@ data Term v
 	deriving (Eq, Ord, Show)
 
 instance Condition.Formula Term where
+	fvars (Var v) = Set.singleton v
+	fvars (Arb _) = Set.empty
+	fvars (App _ args) = Vector.foldl 
+		(\a t -> Set.union a (Condition.fvars t)) Set.empty args
+	fvars (Com elems) = Vector.foldl 
+		(\a t -> Set.union a (Condition.fvars t)) Set.empty elems
 	frefers p t = trefers p t
 	fmap m t = tmap m t
 
@@ -79,18 +84,13 @@ tmap _ (Arb u) = Arb u
 tmap m (App sym args) = App sym $ Vector.map (tmap m) args
 tmap m (Com elems) = Com $ Vector.map (tmap m) elems
 
--- Gets the set of all variables referenced in a term.
-tvars :: (Ord v) => Term v -> Set v
-tvars (Var v) = Set.singleton v
-tvars (Arb _) = Set.empty
-tvars (App _ args) = Vector.foldl (\a t -> Set.union a (tvars t)) Set.empty args
-tvars (Com elems) = Vector.foldl (\a t -> Set.union a (tvars t)) Set.empty elems
-
 -- A constraint, as defined internally by a system. All constraints test whether an
 -- applicative term is equal to an arbitrary term.
 data Cons v = Eq (Maybe Int) Int (Vector (Term v)) (Term v) deriving (Eq, Ord, Show)
 
 instance Condition.Formula Cons where
+	fvars (Eq _ _ args other) = Vector.foldl 
+		(\a t -> Set.union a (Condition.fvars t)) (Condition.fvars other) args
 	frefers p (Eq _ sym args other) = Vector.any (trefers p) args || trefers p other
 	fmap m (Eq prv sym args other) = Eq prv sym (Vector.map (tmap m) args) (tmap m other)
 	
@@ -273,7 +273,7 @@ fromList context rules = res where
 	insertRule (Just state) (x, y) = res where
 		insertArbRule _ var _ args | not (Vector.any (trefers (== var)) args) = Nothing
 		insertArbRule (mainOps, postArbOps) var sym args = Just res where
-			cond = Condition.existsRight (tvars (App sym args)) $
+			cond = Condition.existsRightWith (Condition.fvars (App sym args)) $
 				Condition.conjunction context $ Vector.ifoldl (\a i t ->
 					Condition.ceq context (Var $ Left $ Just i) (tmap (\v ->
 						if v == var then Left Nothing
@@ -287,11 +287,12 @@ fromList context rules = res where
 				cond) : a) mainOps (symbols context)
 			res = (nMainOps, nPostArbOps)
 		insertAppRule (mainOps, postArbOps) xSym xArgs ySym yArgs = Just res where
-			vars = Set.union (tvars $ App xSym xArgs) (tvars $ App ySym yArgs)
+			vars = Set.union (Condition.fvars $ App xSym xArgs) 
+				(Condition.fvars $ App ySym yArgs)
 			conjs m args accum = Vector.ifoldl (\a i t ->
 				Condition.ceq context (Var $ Left $ m i) (tmap Right t) : a)
 				accum args
-			cond = Condition.existsRight vars $
+			cond = Condition.existsRightWith vars $
 				Condition.conjunction context $
 				conjs Left xArgs $ conjs Right yArgs []
 			nMainOps = ((xSym, ySym), cond) : mainOps

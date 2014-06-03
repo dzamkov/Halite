@@ -10,6 +10,8 @@ import qualified Data.List as List
 
 data Term a = Var a | Val Integer deriving (Eq, Ord, Show)
 instance Condition.Formula Term where
+	fvars (Var x) = Set.singleton x
+	fvars (Val x) = Set.empty
 	frefers m (Var x) = m x
 	frefers _ (Val x) = False
 	fmap m (Var x) = Var (m x)
@@ -21,6 +23,7 @@ instance Condition.Term () Term where
 
 data Cons a = Less (Term a) (Term a) deriving (Eq, Ord, Show)
 instance Condition.Formula Cons where
+	fvars (Less x y) = Set.union (Condition.fvars x) (Condition.fvars y)
 	frefers m (Less x y) = Condition.frefers m x || Condition.frefers m y
 	fmap m (Less x y) = Less (Condition.fmap m x) (Condition.fmap m y)
 instance Condition.Constraint () Cons Term where
@@ -46,11 +49,11 @@ assertConsistent cond = assertBool ("inconsistent condition: " ++ show cond) $
 	Condition.consistent cond
 
 assertSolutions expected cond = do
-	let (solutions, nCond) = Condition.extract cond
+	let (solutions, nCond) = Condition.extract () cond
 	assertBool "not fully solved" (Condition.isNever nCond)
 	assertEqual "for solutions, "
-		(Set.fromList $ List.map (Map.map (Condition.fmap Left) . Map.fromList) expected)
-		(Set.fromList $ List.sort solutions)
+		(Set.fromList $ List.map Map.fromList expected)
+		(Set.fromList $ List.map snd $ solutions)
 		
 solution = do
 	let sol = [("a", Val 145), ("b", Val 200)]
@@ -155,6 +158,19 @@ indirect2 = do
 		| x <- [0, 1]]
 	assertSolutions sols cond
 
+general = do
+	let cond = Condition.conjunction () $
+		[equal (Var "a") (Var "b"),
+		equal (Var "b") (Var "c")]
+	assertConsistent (cond :: Condition Cons Term String)
+	let (solutions, nCond) = Condition.extract () cond
+	assertBool "not fully solved" (Condition.isNever nCond)
+	assertBool "incorrect solution count" (List.length solutions == 1)
+	let (_, solution) = List.head solutions
+	assertBool "wrong solution" (case Map.toAscList solution of
+		[("a", Var a), ("b", Var b), ("c", Var c)] | a == b && b == c -> True
+		_ -> False)
+
 challenge = do
 	let apart x y = Condition.existsRightInt 1 $ between
 		(Condition.fmap Left x) (Var $ Right 0) (Condition.fmap Left y)
@@ -185,4 +201,5 @@ tests = test [
 	"bind" ~: bind,
 	"indirect1" ~: indirect1,
 	"indirect2" ~: indirect2,
+	"general" ~: general,
 	"challenge" ~: challenge ]
