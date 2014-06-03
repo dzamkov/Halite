@@ -1,0 +1,1 @@
+ghci tests/Condition.hs

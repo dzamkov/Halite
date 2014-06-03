@@ -1,0 +1,24 @@
+name:                halisp
+version:             0.1.0.0
+-- synopsis:            
+-- description:         
+-- license:             
+license-file:        LICENSE
+author:              Dmitry Zamkov
+maintainer:          dzamkov@xiatek.org
+-- copyright:           
+-- category:            
+build-type:          Simple
+cabal-version:       >=1.8
+
+executable halisp
+  -- main-is:             
+  -- other-modules:       
+  build-depends:     base ==4.6.*,
+                     vector ==0.10.*, 
+                     containers ==0.5.*,
+                     mtl ==2.1.*,
+                     prelude-extras ==0.4.*,
+                     parsec ==3.1.*,
+                     ansi-terminal ==0.6.*
+  hs-source-dirs:    

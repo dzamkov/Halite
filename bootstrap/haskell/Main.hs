@@ -1,7 +1,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Main (main) where
 
-import Halisp.Term (Term (..), var, app)
+import Halisp.Term (Term, var, app)
 import qualified Halisp.Term as Term
 import Halisp.System (System)
 import qualified Halisp.System as System
