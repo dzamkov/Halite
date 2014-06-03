@@ -132,12 +132,12 @@ deriving instance (Show v, Show (t (Either v Int)), Show (k (Either v Int)))
 -- variable to a term. 
 
 -- Rules for condition normalization:
--- 1. If a substitution intersects another rule, that rule must not refer to the variable
+-- 1. The volume for a rule may not be empty.
+-- 2. Every entry in 'rules' must have a substitution or a constraint (no empty).
+-- 3. If a substitution intersects another rule, that rule must not refer to the variable
 --    assigned in the substitution.
--- 2. The volume for a rule may not be empty.
--- 3. For any volume in a condition, there must not exist another volume whose contained
+-- 4. For any volume in a condition, there must not exist another volume whose contained
 --    rules are a proper subset of the first volume's.
--- 4. Every entry in 'rules' must have a substitution or a constraint (no empty).
 
 -- Verifies the internal consistency of a condition. (should never return False)
 consistent :: (Ord v, Formula k, Formula t) => Condition k t v -> Bool
@@ -174,105 +174,100 @@ optimize cond = res where
 		degree = degree cond, volume = nVolume,
 		rules = List.map (\(v, s, c) -> (proj v, s, c)) $ rules cond }
 
--- Inserts a set of rules (all associated with the same volume) into a rule set while
--- preserving normalization rules 1, 2 and 4. The given rules must all be independent (not
--- refer to any variable assigned in a given substitution). Note that some conflicts 
--- during insertion can only be resolved by applying a condition, which are returned along
--- with the rules.
+-- Inserts a set of rules, satisfying normalization rules 1, 2 and 3, into another set
+-- of rules satisfying the same normalization rules. The result is a single set of rules
+-- and conditions, equivalent to the union of the first two sets, satisfying normalization
+-- rules 1, 2 and 3. The returned conditions are necessary to resolve conflicts.
 insertRules :: (Ord v, Constraint r k t) => r
-	-> [(Volume, Map v (t v), [k v], Condition k t v)]
-	-> (Volume, Map v (t v), [k v])
-	-> [(Volume, Map v (t v), [k v], Condition k t v)]
-insertRules context rules part@(sVolume, sSubs, sCons) = res where
-	member map val = Map.member val map -- TODO: Fix function
-	checkRules accum@(rules, parts) o@(oVolume, oSubs, oCons, oCond) = res where
-		eVolume = Volume.intersection oVolume sVolume
-		doVolume = Volume.difference oVolume eVolume
-		commonSubs = Map.intersectionWith (ceq context) sSubs oSubs
-		eConds'' = Map.elems commonSubs
-		usSubs = Map.difference sSubs commonSubs
-		(doSubs, ioSubs) = Map.partition (frefers $ member usSubs) oSubs
-		(dsSubs, isSubs) = Map.partition (frefers $ member oSubs) usSubs
-		insertSub (subs, conds) var value = res where
-			nValue = tsubMap context subs value
-			nSubs = Map.insert var nValue $ Map.map (tsubOne context var nValue) subs
-			nConds = ceq context (tvar context var) nValue : conds
-			res = if frefers (== var) nValue then (subs, nConds) else (nSubs, conds)
-		(eSubs', eConds') = Map.foldlWithKey insertSub (doSubs, eConds'') dsSubs
-		eSubs = Map.map (tsubMap context (Map.unionWith undefined ioSubs isSubs)) eSubs'
-		(doCons, ioCons) = List.partition (frefers $ member usSubs) oCons
-		dsCons = List.filter (frefers $ member oSubs) sCons
-		fSubs = Map.unionWith undefined eSubs $ Map.unionWith undefined ioSubs isSubs
-		eConds = List.foldl (\a c -> csubMap context fSubs c : a)
-			eConds' (doCons ++ dsCons)
-		nRules = 
-			(if Volume.null doVolume || (Map.null doSubs && List.null doCons) then id
-				else ((doVolume, doSubs, doCons, always) :)) $
-			(if Map.null eSubs && List.null eConds then id
-				else ((eVolume, eSubs, [], conjunction context eConds) :)) $
-			(if Map.null ioSubs && List.null ioCons && isAlways oCond then id
-				else ((oVolume, ioSubs, ioCons, oCond) :)) $ rules
-		checkParts parts (pVolume, pSubs, pCons) = res where
-			dpVolume = Volume.difference pVolume eVolume
-			upSubs = Map.difference pSubs commonSubs
-			(dpSubs', ipSubs) = Map.partition (frefers $ member oSubs) upSubs
-			(dpCons, ipCons) = List.partition (frefers $ member oSubs) pCons
-			dpSubs = Map.unionWith undefined dpSubs' (Map.intersection pSubs commonSubs)
-			res =
-				(if Volume.null dpVolume || (Map.null dpSubs && List.null dpCons) then id
-					else ((dpVolume, dpSubs, dpCons) :)) $
-				(if Map.null ipSubs && List.null ipCons then id
-					else ((pVolume, ipSubs, ipCons) :)) $ parts
-		nParts = List.foldl checkParts [] parts
-		res = if Volume.null eVolume then (o : rules, parts) else (nRules, nParts)
-	(nRules, nParts) = List.foldl checkRules ([], [part]) rules
-	res = List.foldl (\a (v, s, c) -> (v, s, c, always) : a) nRules nParts
+	-> ([(Volume, Map v (t v), [k v])], [(Volume, Condition k t v)])
+	-> [(Volume, Map v (t v), [k v])]
+	-> ([(Volume, Map v (t v), [k v])], [(Volume, Condition k t v)])
+insertRules context (rules, conds) amends = res where
+	member map val = Map.member val map
+	filterRules accum other = res where
+		checkAmends others (aVolume, aSubs, _) = res where
+			checkOthers others o@(oVolume, oSubs, oCons) = res where
+				doVolume = Volume.difference oVolume aVolume
+				(doSubs, ioSubs) = Map.partitionWithKey (\k v ->
+					member aSubs k || frefers (member aSubs) v) oSubs
+				(doCons, ioCons) = List.partition (frefers $ member aSubs) oCons
+				res = (if Volume.null doVolume || (Map.null doSubs && List.null doCons)
+					then id else ((doVolume, doSubs, doCons) :)) $
+					(if Map.null ioSubs && List.null ioCons
+					then id else ((oVolume, ioSubs, ioCons) :)) $ others
+			res = List.foldl checkOthers [] others
+		res = List.foldl checkAmends [other] amends ++ accum
+	checkRules accum@(rules, amends, conds) o@(oVolume, oSubs, oCons) = res where
+		checkAmends accum@(amends, conds) a@(aVolume, aSubs, aCons) = res where
+			eVolume = Volume.intersection aVolume oVolume
+			daVolume = Volume.difference aVolume eVolume
+			commonSubs = Map.intersectionWith (ceq context) oSubs aSubs
+			eConds'' = Map.elems commonSubs
+			uoSubs = Map.difference oSubs commonSubs
+			(daSubs, iaSubs) = Map.partition (frefers $ member uoSubs) aSubs
+			(doSubs, ioSubs) = Map.partition (frefers $ member aSubs) uoSubs
+			iSubs = Map.unionWith undefined iaSubs ioSubs
+			insertSub (subs, conds) var value = res where
+				nValue = tsubMap context subs value
+				nSubs = Map.insert var nValue $ Map.map (tsubOne context var nValue) subs
+				nConds = ceq context (tvar context var) nValue : conds
+				res = if frefers (== var) nValue then (subs, nConds) else (nSubs, conds)
+			(eSubs', eConds') = Map.foldlWithKey insertSub (daSubs, eConds'') doSubs
+			eSubs = Map.map (tsubMap context iSubs) eSubs'
+			fSubs = Map.unionWith undefined iSubs eSubs
+			(daCons, iaCons) = List.partition (frefers $ member uoSubs) aCons
+			doCons = List.filter (frefers $ member aSubs) oCons
+			eConds = List.foldl (\a c -> csubMap context fSubs c : a)
+				eConds' (daCons ++ doCons)
+			nAmends = (if Volume.null daVolume || (Map.null daSubs && List.null daCons)
+				then id else ((daVolume, daSubs, daCons) :)) $
+				(if Map.null eSubs then id else ((eVolume, eSubs, []) :)) $
+				(if Map.null iaSubs && List.null iaCons
+				then id else ((aVolume, iaSubs, iaCons) :)) $ amends
+			nConds = if List.null eConds then conds
+				else (eVolume, conjunction context eConds) : conds
+			res = if Volume.null eVolume then (a : amends, conds) else (nAmends, nConds)
+		nRules = filterRules rules o
+		(nAmends, nConds) = List.foldl checkAmends ([], conds) amends
+		res = (nRules, nAmends, nConds)
+	(nRules, nAmends, nConds) = List.foldl checkRules ([], amends, conds) rules
+	res = (nRules ++ nAmends, nConds)
+	
+-- Applies a projection to a set of rules, preserving normalization rule 1.
+applyProj :: (Volume -> Volume) -> [(Volume, a, b)] -> [(Volume, a, b)]
+applyProj proj = List.foldl (\a (v, s, c) -> case proj v of
+	(Volume.null -> True) -> a
+	nV -> (nV, s, c) : a) []
 
--- Converts a rule set with conditions into a rule set without conditions, and a set of
--- amendments to the rule set.
-applyConditions :: (Ord v, Formula k, Formula t)
-	=> Int -> Volume 
-	-> [(Volume, Map (Either v Int) (t (Either v Int)),
-		[k (Either v Int)], Condition k t (Either v Int))]
-	-> (Int, Volume, 
-		[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])], 
-		[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])])
-applyConditions degree' volume' rules' = res where
-	applyCondition
-		accum@(degree', volume', proj, rules', ammends)
-		rule@(rVolume, rSubs, rCons, rCond) = res where
-			prVolume = proj rVolume
-			applyProj proj = List.foldl (\a (v, s, c) -> case proj v of
-				(Volume.null -> True) -> a
-				nV -> (nV, s, c) : a) []
-			applyNever = res where
-				(nVolume, passProj) = Volume.cut volume' prVolume
-				nRules = applyProj passProj rules'
-				nAmmends = applyProj passProj ammends
-				res = (degree', nVolume, passProj . proj, nRules, nAmmends)
-			applyNormal cond = res where
-				nDegree = degree' + degree rCond
-				offsetVar (Left x) = x
-				offsetVar (Right x) = Right (degree' + x)
-				(nVolume, innerProj, passProj) = 
-					Volume.refine volume' prVolume (volume rCond)
-				nRules' = if Map.null rSubs && List.null rCons then rules'
-					else (prVolume, rSubs, rCons) : rules'
-				nRules = applyProj passProj nRules'
-				nAmmends' = applyProj passProj ammends
-				nAmmends = List.foldl (\a (v, s, c) -> (innerProj v, 
-					Map.map (fmap offsetVar) s, 
-					List.map (fmap offsetVar) c) : a) nAmmends' (rules cond)
-				res = (nDegree, nVolume, passProj . proj, nRules, nAmmends)
-			res = if Volume.null prVolume then accum else case rCond of
-				(isAlways -> True) -> (degree', volume', proj,
-					if Map.null rSubs && List.null rCons then rules'
-					else (prVolume, rSubs, rCons) : rules', ammends)
-				(isNever -> True) -> applyNever
-				cond -> applyNormal cond
-	(nDegree, nVolume, _, nRules, nAmmends) =
-		List.foldl applyCondition (degree', volume', id, [], []) rules'
-	res = (nDegree, nVolume, nRules, nAmmends)
+-- Converts a condition into a set of amendments to a volume.
+applyCondition :: (Ord v, Formula k, Formula t)
+	=> (Int, Volume, Volume -> Volume,
+		[[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])]])
+	-> (Volume, Condition k t (Either v Int))
+	-> (Int, Volume, Volume -> Volume,
+		[[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])]])
+applyCondition accum@(degree', volume', proj, amends) (rVolume, rCond) = res where
+	prVolume = proj rVolume
+	applyNever = res where
+		(nVolume, passProj) = Volume.cut volume' prVolume
+		res = (degree', nVolume, passProj, [])
+	applyNormal cond = res where
+		nDegree = degree' + degree cond
+		offsetVar (Left x) = x
+		offsetVar (Right x) = Right (degree' + x)
+		(nVolume, innerProj, passProj) = 
+			Volume.refine volume' prVolume (volume cond)
+		cAmends = List.map (\(v, s, c) -> (innerProj v, 
+			Map.map (fmap offsetVar) s, 
+			List.map (fmap offsetVar) c)) $ rules cond
+		res = (nDegree, nVolume, passProj, cAmends)
+	(nDegree, nVolume, passProj, cAmends) = if isNever rCond
+		then applyNever else applyNormal rCond
+	nAmends' = List.foldl (\a group -> case applyProj passProj group of
+		[] -> a
+		nGroup -> nGroup : a) [] amends
+	nAmends = if List.null cAmends then nAmends' else cAmends : nAmends'
+	res = (nDegree, nVolume, passProj . proj, nAmends)
 
 -- Removes sub-volumes from a condition in order to make it satisfy normalization rule 3.
 prune :: Int -> Volume
@@ -282,25 +277,26 @@ prune degree volume rules = optimize $ Condition {
 	degree = degree, volume = volume,
 	rules = rules } -- TODO
 
--- Constructs a condition by merging a rule set (with conditions), and a set of rules
--- into a single condition.
+-- Constructs a condition by merging a set of rules with a set of amendments and
+-- conditions.
 construct :: (Ord v, Constraint r k t)
 	=> r -> Int -> Volume
-	-> [(Volume, Map (Either v Int) (t (Either v Int)),
-		[k (Either v Int)], Condition k t (Either v Int))]
 	-> [(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])]
+	-> [[(Volume, Map (Either v Int) (t (Either v Int)), [k (Either v Int)])]]
+	-> [(Volume, Condition k t (Either v Int))]
 	-> Condition k t v
-construct context degree volume rules ammends = res where
-	nRules = List.foldl (insertRules context) rules ammends
-	(nDegree, nVolume, fRules, nAmmends) = applyConditions degree volume nRules
+construct context degree volume rules amends conds = res where
+	(nRules', nConds) = List.foldl (insertRules context) (rules, conds) amends
+	(nDegree, nVolume, proj, nAmends) =
+		List.foldl applyCondition (degree, volume, id, []) nConds
+	nRules = applyProj proj nRules'
 	isLeft = either (const True) (const False)
 	leftSubs = List.foldl (\a (v, s, c) -> case Map.filterWithKey (\k _ -> isLeft k) s of
 		(Map.null -> True) -> if List.null c then a else (v, Map.empty, c) : a
 		nS' -> (v, Map.mapKeysMonotonic (either id undefined) nS', c) : a) []
-	augConds = List.map (\(v, s, c) -> (v, s, c, always))
-	res = if List.null nAmmends
-		then prune nDegree nVolume (leftSubs fRules)
-		else construct context nDegree nVolume (augConds fRules) nAmmends
+	res = if List.null nConds
+		then prune nDegree nVolume (leftSubs nRules')
+		else construct context nDegree nVolume nRules nAmends []
 
 -- A condition that is always satisfied.
 always :: Condition k t v
@@ -360,11 +356,11 @@ sub :: (Ord v, Ord n, Constraint r k t) => r -> (v -> t n)
 sub context m cond = res where
 	mapVar (Left x) = fmap Left $ m x
 	mapVar (Right x) = tvar context (Right x)
-	nRules = List.map (\(v, s, c) -> (v, Map.empty, [],
+	conds = List.map (\(v, s, c) -> (v,
 		conjunction context (Map.foldlWithKey (\a v t ->
 			ceq context (fmap Left $ m v) (tsub context mapVar t) : a)
 			(List.map (csub context mapVar) c) s))) $ rules cond
-	res = construct context (degree cond) (volume cond) nRules []
+	res = construct context (degree cond) (volume cond) [] [] conds
 	
 -- Existentially quantifies the given variables within the given condition.
 exists :: (Ord v, Formula k, Formula t) => Set v -> Condition k t v -> Condition k t v
@@ -423,9 +419,8 @@ conjunction :: (Ord v, Constraint r k t) => r -> [Condition k t v] -> Condition 
 conjunction _ [] = always
 conjunction context (head : []) = head
 conjunction context (head : tail) = construct context (degree head) (volume head)
-	((List.foldl (\a cond -> (volume head, Map.empty, [], map Left cond) : a) $
-	List.map (\(v, s, c) -> (v, Map.mapKeysMonotonic Left s, c, always)) $
-	rules head) tail) []
+	(List.map (\(v, s, c) -> (v, Map.mapKeysMonotonic Left s, c)) $ rules head) []
+	(List.map (\c -> (volume head, map Left c)) tail)
 
 -- Computes the disjunction of many conditions.
 disjunction :: (Ord v) => [Condition k t v] -> Condition k t v
@@ -471,9 +466,12 @@ infixl 2 ||^
 -- Refines the constraints in a condition.
 bind :: (Ord v, Constraint r k t) => r -> (forall n. (Ord n) => k n -> Condition k t n)
 	-> Condition k t v -> Condition k t v
-bind context m cond = construct context (degree cond) (volume cond)
-	(List.map (\(v, s, c) -> (v, Map.mapKeysMonotonic Left s, [],
-		conjunction context $ List.map m c)) (rules cond)) []
+bind context m cond = res where
+	nRules = List.foldl (\a (v, s, c) -> case s of
+		(Map.null -> True) -> a
+		s -> (v, Map.mapKeysMonotonic Left s, []) : a) [] $ rules cond
+	conds = List.map (\(v, _, c) -> (v, conjunction context $ List.map m c)) $ rules cond
+	res = construct context (degree cond) (volume cond) nRules [] conds
 
 
 -- Gets the volume of a condition is affected by constraints.
@@ -487,7 +485,6 @@ filterVolume cond volume' = cond { volume = volume', rules = List.foldl (\a (v, 
 	case Volume.intersection v volume' of
 		(Volume.null -> True) -> a
 		nV -> (nV, s, c) : a) [] $ rules cond }
-
 
 -- Reinterprets the given condition as a disjunction of a maximal set of solutions and
 -- a non-solution condition. Note that returned solutions can reference existentially-

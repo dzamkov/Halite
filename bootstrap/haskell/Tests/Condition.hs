@@ -128,16 +128,22 @@ exists = do
 	assertBool "expected always" $ Condition.isAlways cond
 	
 bind = do
-	let cond' = Condition.conjunction () $
-		[less (Var "y") (Val 5),
-		less (Var "x") (Var "y")]
-	assertConsistent cond'
+	let cond' = between (Var "x") (Var "y") (Val 5)
+	assertConsistent (cond' :: Condition Cons Term String)
 	let cond = Condition.bind () resolve $ Condition.bind () resolve cond'
 	assertConsistent cond
 	let sols = [[("x", Val x), ("y", Val y)] | y <- [0 .. 4], x <- [0 .. y - 1]]
 	assertSolutions sols cond
-	
-indirect = do
+
+indirect1 = do
+	let cond = Condition.conjunction () $
+		[oneOf (Var "a") [Val 0, Val 1],
+		equal (Var "b") (Var "a")]
+	assertConsistent (cond :: Condition Cons Term String)
+	let sols = [[("a", Val 0), ("b", Val 0)], [("a", Val 1), ("b", Val 1)]]
+	assertSolutions sols cond
+
+indirect2 = do
 	let cond = Condition.existsFromList ["c"] $ Condition.conjunction () $
 		[oneOf (Var "a") [Val 0, Val 1],
 		equal (Var "d") (Var "c"),
@@ -177,5 +183,6 @@ tests = test [
 	"permutations3" ~: permutations3,
 	"exists" ~: exists,
 	"bind" ~: bind,
-	"indirect" ~: indirect,
+	"indirect1" ~: indirect1,
+	"indirect2" ~: indirect2,
 	"challenge" ~: challenge ]
