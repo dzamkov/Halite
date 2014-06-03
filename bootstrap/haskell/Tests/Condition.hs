@@ -153,6 +153,8 @@ indirect2 = do
 		equal (Var "e") (Var "b"),
 		equal (Var "c") (Var "e"),
 		equal (Var "a") (Var "d")]
+	assertBool "incorrect result from 'vars'" $
+		Condition.vars cond == Set.fromList ["a", "b", "d", "e"]
 	assertConsistent (cond :: Condition Cons Term String)
 	let sols = [[("a", Val x), ("b", Val x), ("d", Val x), ("e", Val x)]
 		| x <- [0, 1]]
