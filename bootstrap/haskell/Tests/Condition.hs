@@ -45,8 +45,8 @@ resolve (Less x y) = case y of
 	(Val ys) -> oneOf x [Val y | y <- [0 .. ys - 1]]
 	y -> Condition.simple $ Less x y
 
-assertConsistent cond = assertBool ("inconsistent condition: " ++ show cond) $
-	Condition.consistent cond
+assertValid cond = assertBool ("invalid condition: " ++ show cond) $
+	Condition.valid cond
 
 assertSolutions expected cond = do
 	let (solutions, nCond) = Condition.extract () cond
@@ -58,7 +58,7 @@ assertSolutions expected cond = do
 solution = do
 	let sol = [("a", Val 145), ("b", Val 200)]
 	let cond = Condition.solutionFromList sol
-	assertConsistent (cond :: Condition Cons Term String)
+	assertValid (cond :: Condition Cons Term String)
 	assertSolutions [sol] cond
 	assertBool "isSolvable incorrect" (Condition.isSolvable cond)
 
@@ -67,34 +67,34 @@ square n = do
 	let cond = Condition.conjunction () $
 		[oneOf (Var "a") values,
 		oneOf (Var "b") values]
-	assertConsistent (cond :: Condition Cons Term String)
+	assertValid (cond :: Condition Cons Term String)
 	let sols = [[("a", Val x), ("b", Val y)] | x <- [0 .. n - 1], y <- [0 .. n - 1]]
 	assertSolutions sols cond
 	
 substitution = do
 	let cond = less (Var (Left ())) (Var (Right ()))
-	assertConsistent (cond :: Condition Cons Term (Either () ()))
+	assertValid (cond :: Condition Cons Term (Either () ()))
 	assertBool "expected contingent" $
 		(not (Condition.isAlways cond) || not (Condition.isNever cond))
 	let cond1 = Condition.sub () (either (const $ Val 3) (const $ Val 10)) cond
-	assertConsistent (cond1 :: Condition Cons Term ())
+	assertValid (cond1 :: Condition Cons Term ())
 	assertBool "expected 3 < 10 to be always" $ Condition.isAlways cond1
 	let cond2 = Condition.sub () (either (const $ Val 30) (const $ Val 13)) cond
-	assertConsistent (cond2 :: Condition Cons Term ())
+	assertValid (cond2 :: Condition Cons Term ())
 	assertBool "expected 30 < 13 to be never" $ Condition.isNever cond2
 
 composition1 = do
 	let cond = Condition.conjunction () $
 		[oneOf (Var "a") [Val 0, Val 5],
 		less (Var "a") (Val 3)]
-	assertConsistent cond
+	assertValid cond
 	assertSolutions [[("a", Val 0)]] cond
 	
 composition2 = do
 	let cond = Condition.conjunction () $
 		[oneOf (Var "a") [Val 1, Val 2, Val 3],
 		notEqual (Var "a") (Val 2)]
-	assertConsistent cond
+	assertValid cond
 	assertSolutions [[("a", Val 1)], [("a", Val 3)]] cond
 		
 permutations2 = do
@@ -102,7 +102,7 @@ permutations2 = do
 		[oneOf (Var "a") [Val 0, Val 1],
 		oneOf (Var "b") [Val 0, Val 1],
 		notEqual (Var "a") (Var "b")]
-	assertConsistent cond
+	assertValid cond
 	let sols = [[("a", Val 0), ("b", Val 1)], [("a", Val 1), ("b", Val 0)]]
 	assertSolutions sols cond
 
@@ -114,7 +114,7 @@ permutations3 = do
 		notEqual (Var "a") (Var "b"),
 		notEqual (Var "b") (Var "c"),
 		notEqual (Var "c") (Var "a")]
-	assertConsistent cond
+	assertValid cond
 	let sols = [
 		[("a", Val 0), ("b", Val 1), ("c", Val 2)], 
 		[("a", Val 0), ("b", Val 2), ("c", Val 1)],
@@ -132,9 +132,9 @@ exists = do
 	
 bind = do
 	let cond' = between (Var "x") (Var "y") (Val 5)
-	assertConsistent (cond' :: Condition Cons Term String)
+	assertValid (cond' :: Condition Cons Term String)
 	let cond = Condition.bind () resolve $ Condition.bind () resolve cond'
-	assertConsistent cond
+	assertValid cond
 	let sols = [[("x", Val x), ("y", Val y)] | y <- [0 .. 4], x <- [0 .. y - 1]]
 	assertSolutions sols cond
 
@@ -142,7 +142,7 @@ indirect1 = do
 	let cond = Condition.conjunction () $
 		[oneOf (Var "a") [Val 0, Val 1],
 		equal (Var "b") (Var "a")]
-	assertConsistent (cond :: Condition Cons Term String)
+	assertValid (cond :: Condition Cons Term String)
 	let sols = [[("a", Val 0), ("b", Val 0)], [("a", Val 1), ("b", Val 1)]]
 	assertSolutions sols cond
 
@@ -155,7 +155,7 @@ indirect2 = do
 		equal (Var "a") (Var "d")]
 	assertBool "incorrect result from 'vars'" $
 		Condition.vars cond == Set.fromList ["a", "b", "d", "e"]
-	assertConsistent (cond :: Condition Cons Term String)
+	assertValid (cond :: Condition Cons Term String)
 	let sols = [[("a", Val x), ("b", Val x), ("d", Val x), ("e", Val x)]
 		| x <- [0, 1]]
 	assertSolutions sols cond
@@ -164,7 +164,7 @@ general = do
 	let cond = Condition.conjunction () $
 		[equal (Var "a") (Var "b"),
 		equal (Var "b") (Var "c")]
-	assertConsistent (cond :: Condition Cons Term String)
+	assertValid (cond :: Condition Cons Term String)
 	let (solutions, nCond) = Condition.extract () cond
 	assertBool "not fully solved" (Condition.isNever nCond)
 	assertBool "incorrect solution count" (List.length solutions == 1)
@@ -183,7 +183,7 @@ challenge = do
 		between (Val 6) (Var "c") (Val 14),
 		apart (Var "a") (Var "b"),
 		notEqual (Var "c") (Val 12)]) ||^ between (Var "b") (Var "a") (Val 13)
-	assertConsistent cond
+	assertValid cond
 	let sols = [[("a", Val a), ("b", Val b)] | (a, b) <-
 		[(a, b) | a <- [5 .. 8], b <- [7 .. 13], a + 1 < b, b /= 12] ++
 		[(a, b) | a <- [0 .. 12], b <- [0 .. a - 1]]]

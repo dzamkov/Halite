@@ -18,6 +18,7 @@ import Data.Maybe (fromJust)
 import Control.Monad.Trans
 import Debug.Trace (trace)
 import qualified Halisp.Interpreter as Interpreter
+import Text.PrettyPrint
 
 term = Term.map undefined . Parser.parse Parser.term
 
@@ -25,8 +26,13 @@ system = fromJust $ System.fromList $ map (Parser.parse Parser.rule) $ [
 	"Double[Pre[x, y]] = Pre[x, Pre[x, Double[y]]]",
 	"Double[Nil] = Nil",
 	"B = D"]
-context = Internal.context $ System.source system
-	
+internal = System.source system
+context = Internal.context $ internal
+refine :: (Ord v) => Internal.Condition v -> Internal.Condition v
+refine = Internal.refine $ internal
+test = Internal.Eq Nothing 0 (Vector.fromList [Internal.Var (Right 0), Internal.Var (Right 1)]) 
+	(Internal.App 0 (Vector.fromList [Internal.Var (Right 2), Internal.Var (Right 3)]))
+
 query :: (Ord v) => QueryT String v IO [Integer]
 query = do
 	k <- Interpreter.load [0 :: Integer .. 3]

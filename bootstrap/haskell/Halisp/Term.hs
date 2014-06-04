@@ -13,7 +13,6 @@ module Halisp.Term (
 ) where
 
 import Prelude hiding (map)
-import Prelude.Extras (Eq1 (..), Ord1 (..))
 import Halisp.Condition (Condition)
 import qualified Halisp.Condition as Condition
 import Data.Set (Set)
@@ -23,13 +22,8 @@ import qualified Data.List as List
 -- A relation of variables and values that acts as a value.
 data Term s v = Var v | App s [Term s v] deriving (Eq, Ord, Show)
 
-instance (Eq s) => Eq1 (Term s) where
-	(==#) = (==)
-	
-instance (Ord s) => Ord1 (Term s) where
-	compare1 = compare
-
 instance (Ord s) => Condition.Formula (Term s) where
+	fvars = vars
 	frefers = refers
 	fmap = map
 

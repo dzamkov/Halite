@@ -11,7 +11,7 @@ module Halisp.Condition (
 	Term (..),
 	Constraint (..),
 	Condition,
-	consistent,
+	valid,
 	always,
 	never,
 	fromBool,
@@ -38,7 +38,8 @@ module Halisp.Condition (
 	bind,
 	extract,
 	extractToList,
-	isSolvable
+	isSolvable,
+	coalesce
 ) where
 
 import Prelude hiding (map, fmap)
@@ -146,8 +147,8 @@ deriving instance (Show v, Show (t (Either v Int)), Show (k (Either v Int)))
 --    rules are a proper subset of the first region's.
 
 -- Verifies the internal consistency of a condition. (should never return False)
-consistent :: (Ord v, Formula k, Formula t) => Condition k t v -> Bool
-consistent cond = res where
+valid :: (Ord v, Formula k, Formula t) => Condition k t v -> Bool
+valid cond = res where
 	highRight (Right x) | x >= degree cond = True
 	highRight _ = False
 	member subs (Left x) = Map.member x subs
@@ -179,6 +180,20 @@ optimize cond = res where
 	res = Condition {
 		degree = degree cond, region = nRegion,
 		rules = List.map (\(v, s, c) -> (proj v, s, c)) $ rules cond }
+		
+-- Computes the fixed point of a set of substitutions. The resulting set of substitutions
+-- will not refer to any variable being substituted. In cases where this is not possible,
+-- offending substitutions (which reference their own variable) will be returned in a
+-- separate list.
+fixSubstitutions :: (Ord v, Term r t) => r -> Map v (t v) -> (Map v (t v), [(v, t v)])
+fixSubstitutions context subs = res where
+	insertSub (subs, rem) var value = res where
+		nValue = tsubMap context subs value
+		nSubs = Map.insert var nValue $ Map.map (tsubOne context var nValue) subs
+		nRem = (var, nValue) : rem
+		res = if frefers (== var) nValue then (subs, nRem) else (nSubs, rem)
+	res = Map.foldlWithKey insertSub (Map.empty, []) subs
+
 
 -- Inserts a set of rules, satisfying normalization rules 1, 2 and 3, into another set
 -- of rules satisfying the same normalization rules. The result is a single set of rules
@@ -188,56 +203,39 @@ insertRules :: (Ord v, Constraint r k t) => r
 	-> ([(Region, Map v (t v), [k v])], [(Region, Condition k t v)])
 	-> [(Region, Map v (t v), [k v])]
 	-> ([(Region, Map v (t v), [k v])], [(Region, Condition k t v)])
-insertRules context (rules, conds) amends = res where
+insertRules context (aRules, conds) bRules = res where
 	member map val = Map.member val map
-	filterRules accum other = res where
-		checkAmends others (aRegion, aSubs, _) = res where
-			checkOthers others o@(oRegion, oSubs, oCons) = res where
-				doRegion = Region.difference oRegion aRegion
-				(doSubs, ioSubs) = Map.partitionWithKey (\k v ->
-					member aSubs k || frefers (member aSubs) v) oSubs
-				(doCons, ioCons) = List.partition (frefers $ member aSubs) oCons
-				res = (if Region.null doRegion || (Map.null doSubs && List.null doCons)
-					then id else ((doRegion, doSubs, doCons) :)) $
-					(if Map.null ioSubs && List.null ioCons
-					then id else ((oRegion, ioSubs, ioCons) :)) $ others
-			res = List.foldl checkOthers [] others
-		res = List.foldl checkAmends [other] amends ++ accum
-	checkRules accum@(rules, amends, conds) o@(oRegion, oSubs, oCons) = res where
-		checkAmends accum@(amends, conds) a@(aRegion, aSubs, aCons) = res where
-			eRegion = Region.intersection aRegion oRegion
-			daRegion = Region.difference aRegion eRegion
-			commonSubs = Map.intersectionWith (ceq context) oSubs aSubs
-			eConds'' = Map.elems commonSubs
-			uoSubs = Map.difference oSubs commonSubs
-			(daSubs, iaSubs) = Map.partition (frefers $ member uoSubs) aSubs
-			(doSubs, ioSubs) = Map.partition (frefers $ member aSubs) uoSubs
-			iSubs = Map.unionWith undefined iaSubs ioSubs
-			insertSub (subs, conds) var value = res where
-				nValue = tsubMap context subs value
-				nSubs = Map.insert var nValue $ Map.map (tsubOne context var nValue) subs
-				nConds = ceq context (tvar context var) nValue : conds
-				res = if frefers (== var) nValue then (subs, nConds) else (nSubs, conds)
-			(eSubs', eConds') = Map.foldlWithKey insertSub (daSubs, eConds'') doSubs
-			eSubs = Map.map (tsubMap context iSubs) eSubs'
-			fSubs = Map.unionWith undefined iSubs eSubs
-			(daCons, iaCons) = List.partition (frefers $ member uoSubs) aCons
-			doCons = List.filter (frefers $ member aSubs) oCons
-			eConds = List.foldl (\a c -> csubMap context fSubs c : a)
-				eConds' (daCons ++ doCons)
-			nAmends = (if Region.null daRegion || (Map.null daSubs && List.null daCons)
-				then id else ((daRegion, daSubs, daCons) :)) $
-				(if Map.null eSubs then id else ((eRegion, eSubs, []) :)) $
-				(if Map.null iaSubs && List.null iaCons
-				then id else ((aRegion, iaSubs, iaCons) :)) $ amends
-			nConds = if List.null eConds then conds
-				else (eRegion, conjunction context eConds) : conds
-			res = if Region.null eRegion then (a : amends, conds) else (nAmends, nConds)
-		nRules = filterRules rules o
-		(nAmends, nConds) = List.foldl checkAmends ([], conds) amends
-		res = (nRules, nAmends, nConds)
-	(nRules, nAmends, nConds) = List.foldl checkRules ([], amends, conds) rules
-	res = (nRules ++ nAmends, nConds)
+	updateWith primary (rules, conds) other@(oRegion, oSubs, _) = res where
+		updateRule (accum, conds) rule@(rRegion, rSubs, rCons) = res where
+			commonSubs = Map.intersectionWith (ceq context) rSubs oSubs
+			(urSubs, erConds'') = if primary then (rSubs, [])
+				else (Map.difference rSubs commonSubs, Map.elems commonSubs)
+			(drSubs', irSubs) = Map.partition (frefers $ member oSubs) urSubs
+			(drCons, irCons) = List.partition (frefers $ member oSubs) rCons
+			drSubs = if primary then drSubs' else Map.difference rSubs irSubs
+			(erSubs', eRems) = fixSubstitutions context $
+				Map.map (tsubMap context oSubs) drSubs'
+			erSubs = Map.map (tsubMap context irSubs) erSubs'
+			fSubs = Map.union erSubs oSubs
+			erConds' = List.foldl (\a (v, t) -> ceq context (tvar context v) t : a)
+				erConds'' eRems
+			erConds = List.foldl (\a con -> csubMap context fSubs con : a)
+				erConds' drCons
+			eRegion = Region.intersection rRegion oRegion
+			drRegion = Region.difference rRegion eRegion
+			nAccum = (if Region.null drRegion || (Map.null drSubs && List.null drCons)
+				then id else ((drRegion, drSubs, drCons) :)) $
+				(if Map.null erSubs then id else ((eRegion, erSubs, []) :)) $
+				(if Map.null irSubs && List.null irCons
+				then id else ((rRegion, irSubs, irCons) :)) $ accum
+			nConds = if List.null erConds then conds
+				else (eRegion, conjunction context erConds) : conds
+			res = if Region.null eRegion then (rule : accum, conds)
+				else (nAccum, nConds)
+		res = List.foldl updateRule ([], conds) rules
+	(naRules, nConds') = List.foldl (updateWith False) (aRules, conds) bRules
+	(nbRules, nConds) = List.foldl (updateWith True) (bRules, nConds') aRules
+	res = (nbRules ++ naRules, nConds)
 	
 -- Applies a projection to a set of rules, preserving normalization rule 1.
 applyProj :: (Region -> Region) -> [(Region, a, b)] -> [(Region, a, b)]
@@ -512,9 +510,9 @@ filterRegion cond region' = cond { region = region', rules = List.foldl (\a (v, 
 
 -- Converts a solution with free and quantified variables into a solution with only
 -- quantified variables.
-fixSolution :: (Ord v, Term r t) => r -> Int
+prepareSolution :: (Ord v, Term r t) => r -> Int
 	-> Map v (t (Either v Int)) -> (Int, Map v (t Int))
-fixSolution context degree sol = res where
+prepareSolution context degree sol = res where
 	vars = Map.foldl (\a t -> Set.union a $ fvars t) Set.empty sol
 	(varMap, nDegree) = Set.foldl (\(m, d) v -> case v of
 		Left vL -> (Map.insert vL d m, d + 1)
@@ -546,7 +544,7 @@ extract context cond = res where
 					(if Region.null difference then id
 					else ((difference, sSubs) :)) $ accum
 		res = List.foldl refineOne [] accum
-	solutions = List.map (fixSolution context (degree cond) . snd) $ 
+	solutions = List.map (prepareSolution context (degree cond) . snd) $ 
 		List.foldl refine [(sRegion, Map.empty)] $ rules cond
 	nCond = filterRegion cond cRegion
 	res = (solutions, nCond)
@@ -563,3 +561,20 @@ extractToList context cond = res where
 -- Determines whether the given condition has a solution.
 isSolvable :: (Ord v) => Condition k t v -> Bool
 isSolvable cond = not (Region.contains (constraintRegion cond) (region cond))
+
+-- Groups together common substitutions and constraints within a condition. This should
+-- no change the meaning of a condition, but may reduce its complexity.
+coalesce :: (Ord v, Ord (t (Either v Int)), Ord (k (Either v Int)))
+	=> Condition k t v -> Condition k t v
+coalesce cond = res where
+	(subs, cons) = List.foldl (\(subs, cons) (v, s, c) ->
+		(Map.foldlWithKey (\subs var term -> Map.insert (var, term) v subs) subs s,
+		List.foldl (\cons con -> Map.insert con v cons) cons c))
+		(Map.empty, Map.empty) $ rules cond
+	mergeRules (aSubs, aCons) (bSubs, bCons) =
+		(Map.unionWith undefined aSubs bSubs, aCons ++ bCons)
+	nRules'	= Map.foldlWithKey (\rules (var, term) v -> Map.insertWith mergeRules
+		v (Map.singleton var term, []) rules) Map.empty subs
+	nRules = Map.foldlWithKey (\rules con v -> Map.insertWith mergeRules
+		v (Map.empty, [con]) rules) nRules' cons
+	res = cond { rules = List.map (\(v, (s, c)) -> (v, s, c)) $ Map.toList nRules }
