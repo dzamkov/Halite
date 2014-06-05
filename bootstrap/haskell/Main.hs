@@ -30,8 +30,6 @@ internal = System.source system
 context = Internal.context $ internal
 refine :: (Ord v) => Internal.Condition v -> Internal.Condition v
 refine = Internal.refine $ internal
-test = Internal.Eq Nothing 0 (Vector.fromList [Internal.Var (Right 0), Internal.Var (Right 1)]) 
-	(Internal.App 0 (Vector.fromList [Internal.Var (Right 2), Internal.Var (Right 3)]))
 
 query :: (Ord v) => QueryT String v IO [Integer]
 query = do

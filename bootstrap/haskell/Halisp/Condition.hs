@@ -274,12 +274,38 @@ applyCondition accum@(degree', region', proj, amends) (rRegion, rCond) = res whe
 	res = (nDegree, nRegion, passProj . proj, nAmends)
 
 -- Removes sub-regions from a condition in order to make it satisfy normalization rule 3.
+-- This assumes that each region occurs at most once in the rules list.
 prune :: Int -> Region
 	-> [(Region, Map v (t (Either v Int)), [k (Either v Int)])]
 	-> Condition k t v
-prune degree region rules = optimize $ Condition {
-	degree = degree, region = region,
-	rules = rules } -- TODO
+prune degree region rules = res where
+	split' accum [] = accum
+	split' accum@(piv, xa, ya) (x : []) = (piv, x : xa, ya)
+	split' accum@(piv, xa, ya) (x : y : s) = split' (piv, x : xa, y : ya) s
+	split (head : tail) = split' (head, [], []) tail
+	pruneRules outsideRegion (insideRegion, _, _) = res where
+		cutRegion = if Region.contains outsideRegion insideRegion then Region.empty
+			else Region.intersection outsideRegion insideRegion
+		res = (insideRegion, cutRegion)
+	prunePart _ [] = (Region.empty, Region.empty)
+	prunePart outsideRegion rules = res where
+		(piv, lRules, rRules) = split rules
+		opRegion = Region.union outsideRegion pInsideRegion
+		olpRegion = Region.union lInsideRegion opRegion
+		lrRegion = Region.union lInsideRegion rInsideRegion
+		oprRegion = Region.union rInsideRegion opRegion
+		olrRegion = Region.union outsideRegion lrRegion
+		(lInsideRegion, lCutRegion) = prunePart oprRegion lRules 
+		(pInsideRegion, pCutRegion) = pruneRules olrRegion piv
+		(rInsideRegion, rCutRegion) = prunePart olpRegion rRules
+		res = (Region.union pInsideRegion $ lrRegion,
+			Region.union lCutRegion $ Region.union pCutRegion rCutRegion)
+	(insideRegion, cutRegion) = prunePart Region.empty rules
+	(nRegion, proj) = Region.cut region cutRegion
+	res = if Region.contains insideRegion region then optimize $ Condition {
+			degree = degree, region = nRegion,
+			rules = applyProj proj rules }
+		else always
 
 -- Constructs a condition by merging a set of rules with a set of amendments and
 -- conditions.
@@ -298,8 +324,13 @@ construct context degree region rules amends conds = res where
 	leftSubs = List.foldl (\a (v, s, c) -> case Map.filterWithKey (\k _ -> isLeft k) s of
 		(Map.null -> True) -> if List.null c then a else (v, Map.empty, c) : a
 		nS' -> (v, Map.mapKeysMonotonic (either id undefined) nS', c) : a) []
+	mergeRules (xSubs, xCons) (ySubs, yCons) =
+		(Map.unionWith undefined xSubs ySubs, xCons ++ yCons)
+	mergeRegions =
+		List.map (\(v, (s, c)) -> (v, s, c)) . Map.toList .
+		Map.fromListWith mergeRules . List.map (\(v, s, c) -> (v, (s, c)))
 	res = if List.null nConds
-		then prune nDegree nRegion (leftSubs nRules')
+		then prune nDegree nRegion (mergeRegions $ leftSubs nRules')
 		else construct context nDegree nRegion nRules nAmends []
 
 -- A condition that is always satisfied.
@@ -563,7 +594,7 @@ isSolvable :: (Ord v) => Condition k t v -> Bool
 isSolvable cond = not (Region.contains (constraintRegion cond) (region cond))
 
 -- Groups together common substitutions and constraints within a condition. This should
--- no change the meaning of a condition, but may reduce its complexity.
+-- not change the meaning of a condition, but may reduce its complexity.
 coalesce :: (Ord v, Ord (t (Either v Int)), Ord (k (Either v Int)))
 	=> Condition k t v -> Condition k t v
 coalesce cond = res where
@@ -577,4 +608,5 @@ coalesce cond = res where
 		v (Map.singleton var term, []) rules) Map.empty subs
 	nRules = Map.foldlWithKey (\rules con v -> Map.insertWith mergeRules
 		v (Map.empty, [con]) rules) nRules' cons
-	res = cond { rules = List.map (\(v, (s, c)) -> (v, s, c)) $ Map.toList nRules }
+	res = prune (degree cond) (region cond) $ 
+		List.map (\(v, (s, c)) -> (v, s, c)) $ Map.toList nRules
