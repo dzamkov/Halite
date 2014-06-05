@@ -36,13 +36,16 @@ module Halisp.Condition (
 	(&&^),
 	(||^),
 	bind,
+	flip,
+	join,
+	joinInt,
 	extract,
 	extractToList,
 	isSolvable,
 	coalesce
 ) where
 
-import Prelude hiding (map, fmap)
+import Prelude hiding (map, fmap, flip)
 import Halisp.Region (Region)
 import qualified Halisp.Region as Region
 import Data.Set (Set)
@@ -465,7 +468,7 @@ existsRightInt bound cond = res where
 		([], False) $ rules cond
 	res = if anyRemoved then prune (degree cond + bound) (region cond) nRules
 		else Condition { degree = degree cond + bound,
-			region = region cond, rules = nRules }
+			region = region cond, rules = nRules }	
 
 -- Computes the conjunction of many conditions.
 conjunction :: (Ord v, Constraint r k t) => r -> [Condition k t v] -> Condition k t v
@@ -525,6 +528,30 @@ bind context m cond = res where
 		s -> (v, Map.mapKeysMonotonic Left s, []) : a) [] $ rules cond
 	conds = List.map (\(v, _, c) -> (v, conjunction context $ List.map m c)) $ rules cond
 	res = construct context (degree cond) (region cond) nRules [] conds
+	
+-- Swaps the Left and Right variables within a condition.
+flip :: (Ord a, Ord b, Formula k, Formula t)
+	=> Condition k t (Either a b) -> Condition k t (Either b a)
+flip = map (either Right Left)
+	
+-- Joins two conditions, representing relations into one.
+join :: (Ord a, Ord b, Ord c, Constraint r k t) => r
+	-> Condition k t (Either a b) 
+	-> Condition k t (Either b c)
+	-> Condition k t (Either a c)
+join context a b = existsRight $ conjunction context
+	[map (either (Left . Left) Right) a,
+	map (either Right (Left . Right)) b]
+	
+-- Joins two conditions, representing relations into one.
+joinInt :: (Ord a, Ord b, Constraint r k t) => r -> Int
+	-> Condition k t (Either a Int) 
+	-> Condition k t (Either Int b)
+	-> Condition k t (Either a b)
+joinInt context dim a b = existsRightInt dim $ conjunction context
+	[map (either (Left . Left) Right) a,
+	map (either Right (Left . Right)) b]
+
 
 
 -- Gets the region of a condition is affected by constraints.
