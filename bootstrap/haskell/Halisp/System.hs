@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 module Halisp.System (
+	Symbol (..),
 	Term (..),
 	Direction (..),
 	Constraint (..),
@@ -25,7 +26,7 @@ import qualified Halisp.Condition as Condition
 class (Ord s) => Symbol r s where
 
 	-- Folds over all symbols (and their corresponding dimensions) in a context.
-	sfold :: (a -> s -> Int -> a) -> a -> r -> a
+	sfold :: r -> (a -> s -> Int -> a) -> a -> a
 
 	-- Gets the number of arguments expected by the given symbol.
 	sdim :: r -> s -> Int
@@ -167,12 +168,12 @@ fromLists context appApp appArb = res where
 			(if sym == xSym then ((Forward, ySym, cond) :) else id) $
 			(if sym == ySym then ((Backward, xSym, Condition.flip cond) :) else id) $ a))
 		appAppConds $ (flip $ List.foldl (\a (aSym, cond) ->
-			(if sym /= aSym then id else flip (sfold (\a tSym dim ->
+			(if sym /= aSym then id else sfold context (\a tSym dim ->
 				(Forward, tSym, Condition.sub context (\v -> case v of
 					Just i -> Condition.tvar context $ Left i
 					Nothing -> tapp context tSym $
 						Vector.generate dim (Condition.tvar context . Right))
-				cond) : a)) $ context) $
+				cond) : a)) $
 			((Backward, aSym, Condition.sub context (\v -> case v of
 				Just i -> Condition.tvar context $ Right i
 				Nothing -> tapp context sym $ 

@@ -4,6 +4,7 @@
 {-# LANGUAGE RankNTypes #-}
 module Halisp.Term (
 	Term (..),
+	Reduction (..),
 	vars,
 	refers,
 	map,
@@ -15,17 +16,21 @@ module Halisp.Term (
 	comFromList,
 	nat,
 	sum,
+	nil,
 	list,
 	concat,
 	concatParts,
+	null,
 	set,
 	setFromList,
 	union,
 	sub,
+	unify,
+	unifyInt,
 	equal
 ) where
 
-import Prelude hiding (map, sum, concat)
+import Prelude hiding (map, sum, concat, null)
 import Halisp.Condition (Condition)
 import qualified Halisp.Condition as Condition
 import Data.Set (Set)
@@ -160,6 +165,9 @@ sum' const accum ((Nat hConst hMap, hCoeff) : tail) = sum'
 sum :: (Ord u, Ord s, Ord v) => Integer -> [(Term u s v, Integer)] -> Term u s v
 sum const = sum' const Map.empty
 
+-- A term representing an empty list.
+nil = List []
+
 -- Constructs a term for a list.
 list :: [Term u s v] -> Term u s v
 list items = List $ List.map (\i -> (False, i)) items
@@ -177,6 +185,10 @@ concatParts :: [(Bool, Term u s v)] -> Term u s v
 concatParts parts = List $ List.concat $ List.map (\i -> case i of
 	(True, List parts) -> parts
 	part -> [part]) parts
+
+-- A term representing an empty set.
+null :: Term u s v
+null = Set Set.empty Set.empty
 	
 -- Constructs a term for a set.
 set :: Set (Term u s v) -> Term u s v
@@ -214,8 +226,18 @@ sub app m (List parts) = concatParts $ List.map (\(b, t) -> (b, sub app m t)) pa
 sub app m (Set elems sets) = union' (Set.map (sub app m) elems) Set.empty $
 	List.map (sub app m) $ Set.toList sets
 	
+-- Finds all substitutions of variables in the first term that make it structurally
+-- equivalent to the second term.
+unify :: (Eq u, Eq s, Ord v) => Term u s v -> Term u s n -> [Map v (Term u s n)]
+unify _ _ = undefined -- TODO
+
+-- Finds all substitutions of variables in the first term that make it structurally
+-- equivalent to the second term.
+unifyInt :: (Eq u, Eq s) => (Int, Term u s Int) -> Term u s n -> [Vector (Term u s n)]
+unifyInt _ _ = undefined -- TODO
+
 -- Constructs a condition that is satisfied when the two given terms are equivalent,
--- provided a function to construct a condition for when an applicative term is
+-- provided a function to construct a condition for when an applicative term is 
 -- equivalent to an arbitrary term.
 equal :: (Ord u, Ord s, Ord v, Condition.Constraint r k (Term u s)) => r
 	-> (s -> Vector (Term u s v) -> Term u s v -> Condition k (Term u s) v)
