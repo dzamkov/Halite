@@ -60,7 +60,7 @@ solution = do
 	let cond = Condition.solutionFromList sol
 	assertValid (cond :: Condition Cons Term String)
 	assertSolutions [sol] cond
-	assertBool "isSolvable incorrect" (Condition.isSolvable cond)
+	assertBool "isExtractable incorrect" (Condition.isExtractable cond)
 
 square n = do
 	let values = [Val x | x <- [0 .. n - 1]]

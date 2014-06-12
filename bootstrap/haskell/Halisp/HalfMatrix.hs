@@ -1,4 +1,4 @@
-module Halisp.System.HalfMatrix (
+module Halisp.HalfMatrix (
 	HalfMatrix (..),
 	empty,
 	singleton,

@@ -41,7 +41,9 @@ module Halisp.Condition (
 	joinInt,
 	extract,
 	extractToList,
-	isSolvable,
+	isExtractable,
+	restrict,
+	restrictFromList,
 	coalesce
 ) where
 
@@ -373,6 +375,10 @@ simples cons = Condition { degree = 0, region = Region.single,
 solution :: (Ord v, Formula t) => Map v (t v) -> Condition k t v
 solution subs = Condition { degree = 0, region = Region.single,
 	rules = [(Region.single, Map.map (fmap Left) subs, [])] }
+	
+-- TODO: Prevent creation of solutions that reference substituted variables by making
+-- the substitution type and the reference type distinct (using existential
+-- quantification).
 
 -- Constructs a condition that is satisfied exactly when the given substitution is in
 -- effect.
@@ -617,8 +623,22 @@ extractToList context cond = res where
 	res = (nSubs, nCond)
 
 -- Determines whether the given condition has a solution.
-isSolvable :: (Ord v) => Condition k t v -> Bool
-isSolvable cond = not (Region.contains (constraintRegion cond) (region cond))
+isExtractable :: (Ord v) => Condition k t v -> Bool
+isExtractable cond = not (Region.contains (constraintRegion cond) (region cond))
+
+-- Constructs a condition that is satisfied when both the given substitution and the given
+-- condition are satisfied, provided that the substitution does not substitute any
+-- variables that are referenced in the condition.
+restrict :: (Ord v, Constraint r k t) => r -> Map v (t v)
+	-> Condition k t v -> Condition k t v
+restrict context subs cond = conjunction context [cond, solution subs] 
+
+-- Constructs a condition that is satisfied when both the given substitution and the given
+-- condition are satisfied, provided that the substitution does not substitute any
+-- variables that are referenced in the condition.
+restrictFromList :: (Ord v, Constraint r k t) => r -> [(v, t v)]
+	-> Condition k t v -> Condition k t v
+restrictFromList context subs cond = restrict context (Map.fromList subs) cond
 
 -- Groups together common substitutions and constraints within a condition. This should
 -- not change the meaning of a condition, but may reduce its complexity.
