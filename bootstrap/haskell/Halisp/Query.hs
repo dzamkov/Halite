@@ -1,188 +1,239 @@
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Halisp.Query (
+	Term (..),
 	QueryT (..),
 	Query,
-	QTerm,
 	eval,
 	var,
-	term,
-	iter,
+	app,
 	equal,
-	branch,
-	uniter,
-	discard
+	scoped
 ) where
 
 import Prelude hiding (map)
-import Halisp.Term (Term (..))
-import qualified Halisp.Term as Term
-import qualified Halisp.System.Term as STerm
-import qualified Halisp.System.Internal as Internal
 import qualified Halisp.Condition as Condition
 import Halisp.System (System)
 import qualified Halisp.System as System
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Map (Map)
-import qualified Data.Map as Map
 import qualified Data.List as List
-import Control.Monad.State
+import Control.Monad.Trans
 import Control.Monad.Identity
 import Control.Monad (forM)
 
--- The mutable context for a query at any time.
-data Context s v = Context {
+-- Describes the general form of the computation path of a query.
+data Path c m s a
 
-	-- Assigns unique integers to each symbol that is used in the query, but not
-	-- considered in the system. Applications of these symbols are encoded as compounds
-	-- prefixed with an 'Arb' term of the corresponding symbol index.
-	extra :: Map (s, Int) Int,
+	-- A computation path that splits into two options.
+	= forall p b. Branch (Path c m p b) (Path c m p b) (p -> b -> m (Result c m s a))
 	
-	-- The remaining free variables that can be used by the query.
-	vars :: [v] } deriving (Show)
+	-- A computation path that might fail, depending on a condition 'c'.
+	| forall v. (Ord v) => Break (c v) (c v -> m (Result c m s a))
+	
+-- Describes the general form of the result of applying a query to a context/system.
+data Result c m s a
 
--- A term within a query.
-newtype QTerm v = QTerm (Internal.Term v) deriving (Eq, Ord, Show)
+	-- A result where there are no breaks or branches in the computation path.
+	= Simple s a
 	
--- Converts an a term into a query-internal term.
-load :: (Ord s, Ord v) => System s -> Term s (QTerm v)
-	-> State (Context s v) (Internal.Term v)
-load _ (Var (QTerm t)) = return t
-load system (App sym args) = res where
-	symDim = (sym, List.length args)
-	res = do
-		nArgs <- forM args (load system)
-		case Map.lookup symDim (System.symbols $ system) of
-			Just nSym -> return $ STerm.appFromList
-				(Internal.context $ System.source $ system) nSym nArgs
-			Nothing -> do
-				state <- get
-				case Map.lookup symDim (extra state) of
-					Just nSym -> return $ STerm.comFromList (STerm.arb nSym : nArgs)
-					Nothing -> do
-						let nSym = Map.size $ extra state
-						put $ state { extra = Map.insert symDim nSym $ extra state }
-						return $ STerm.comFromList (STerm.arb nSym : nArgs)	
+	-- A result that has a complex computation path.
+	| Complex (Path c m s a)
+	
+-- Binds the state and return value of a path.
+pbind :: (Monad m)
+	=> Path c m p b
+	-> (p -> b -> m (Result c m s a))
+	-> Path c m s a
+pbind (Branch x y cont) m =
+	Branch x y (\s v -> do
+		res <- cont s v
+		rbind res m)
+pbind (Break c cont) m =
+	Break c (\c -> do
+		res <- cont c
+		rbind res m)
+	
+-- Binds the state and return value of a result.
+rbind :: (Monad m)
+	=> Result c m p b
+	-> (p -> b -> m (Result c m s a)) 
+	-> m (Result c m s a)
+rbind (Simple state value) m = m state value
+rbind (Complex path) m = return $ Complex $ pbind path m
+		
+-- Constructs a result from a state and a value.
+rreturn :: (Monad m) => s -> a -> m (Result c m s a)
+rreturn state value = return $ Simple state value
+
+-- Evaluates a path (with the given condition evaluation function) to get a result.
+peval :: (Monad m)
+	=>(forall v. (Ord v) => c v -> Maybe (Bool, c v))
+	-> Path c m s a -> m (Maybe (Result c m s a))
+peval eval (Branch x y cont) = do
+	rX <- peval eval x
+	rY <- peval eval y
+	case (rX, rY) of
+		(Nothing, Nothing) -> return Nothing
+		(Nothing, Just rY) -> rbind rY cont >>= (return . Just)
+		(Just rX, Nothing) -> rbind rX cont >>= (return . Just)
+		(Just (Simple state value), Just _) -> cont state value >>= (return . Just)
+		(Just _, Just (Simple state value)) -> cont state value >>= (return . Just)
+		(Just (Complex nX), Just (Complex nY)) ->
+			return $ Just $ Complex $ Branch nX nY cont
+peval eval (Break cond cont) = case eval cond of
+	Nothing -> return Nothing
+	Just (False, nCond) -> return $ Just $ Complex $ Break nCond cont
+	Just (True, nCond) -> cont cond >>= (return . Just)
+		
+-- A term that can be used in a query.
+class (System.Term r t n) => Term q r t s n where
+
+	-- Constructs an applicative term.
+	tapp :: (Ord v) => r -> q -> s -> [v] -> (q, t v)
+	
+-- Encapsulates the state of a query computation path.
+data State q t n v = State {
+
+	-- The term-defined context used to convert query applicative terms into system/term
+	-- applicative terms.
+	converter :: q,
+	
+	-- An infinite list of variables that are not referenced in the condition for this
+	-- state. When a new variable is needed, it is taken from this list.
+	vars :: [v],
+	
+	-- Contains the variables for each scope in the state, ordered by distance from the
+	-- current scope.
+	scopes :: [Set v],
+	
+	-- The index of the current scope. The root scope is 0 and each inner scope is
+	-- decremented by one. This is always one less than the length of the scopes list.
+	scopeIndex :: Int,
+	
+	-- The condition under which this query path is successful.
+	condition :: System.Condition t n v }
 
 -- A monad transformer for computations that inspect the equivalence relationships within
 -- a system.
-newtype QueryT s v m a = QueryT { run :: (Monad m) => System s
-	-> Context s v -> Internal.Condition v
-	-> m (Either 
-		(Context s v, Internal.Condition v, a) 
-		[(Context s v, Internal.Condition v, QueryT s v m a)]) }
-	
+newtype QueryT s v m a = QueryT {
+	run :: forall q r t n. (Term q r t s n)
+		=> r -> State q t n v
+		-> m (Result (System.Condition t n) m (State q t n v) a) }
+
 -- A monad for computations that inspect the equivalence relationships within a system.
 type Query s v = QueryT s v Identity
 
 instance (Monad m) => Monad (QueryT s v m) where
-	(>>=) x y = QueryT run' where
-		run' system context cond = do
-			r <- run x system context cond
-			case r of
-				Left (nContext, nCond, value) -> run (y value) system nContext nCond
-				Right cases -> return $ Right $
-					List.map (\(a, b, x) -> (a, b, x >>= y)) cases
-	return value = QueryT run' where
-		run' _ context cond = return (Left (context, cond, value))
-		
-instance (Monad m) => MonadPlus (QueryT s v m) where
-	mplus x y = QueryT run' where
-		run' system context cond = do
-			rX <- run x system context cond
-			rY <- run y system context cond
-			return $ case (rX, rY) of
-				(Left x, _) -> Left x
-				(_, Left y) -> Left y
-				(Right x, Right y) -> Right (x ++ y)
-	mzero = QueryT run' where
-		run' _ _ _ = return (Right [])
+	(>>=) x y = QueryT (\context state -> do
+		r <- run x context state
+		rbind r (\nState value -> run (y value) context nState))
+	return value = QueryT (\_ state -> rreturn state value)
 
 instance MonadTrans (QueryT s v) where
-	lift x = QueryT run' where
-		run' _ context cond = x >>= (\r -> return $ Left (context, cond, r))
-		
+	lift x = QueryT (\_ state -> x >>= (rreturn state))
+
 instance (MonadIO m) => MonadIO (QueryT s v m) where
 	liftIO = lift . liftIO
 	
--- Evaluates a query, returning the result of the successful computation path, or Nothing
--- if no computation path has a solution.
-eval :: (Ord s, Monad m) => (forall v. (Ord v) => QueryT s v m a)
-	-> System s -> m (Maybe a)
-eval query system = res where
-	solve cases = case List.partition (\(_, c, _) -> Condition.isSolvable c) cases of
-		(sol : a, b) -> Just (sol, b ++ a)
-		([], cs) -> solve $ List.filter (\(_, c, _) -> not $ Condition.isNever c) $
-			List.map (\(a, c, b) -> (a, Internal.refine (System.source system) c, b)) cs
-	evalWith others query context cond = do
-		r <- run query system context cond
+-- Evaluates a query with a system.
+eval :: (Monad m, Term q r t s n)
+	=> (forall v. (Ord v) => QueryT s v m a)
+	-> r -> q -> System t n -> m a
+eval query context converter system = res where
+	iterate (Simple _ value) = return value
+	iterate (Complex (Break cond cont)) = do
+		r <- cont cond
+		iterate r
+	iterate (Complex path) = do
+		r <- peval (\cond -> case cond of
+			(Condition.isExtractable -> True) -> Just (True, cond)
+			(Condition.isNever -> True) -> Nothing
+			cond -> Just (False, System.refine context system cond)) path
 		case r of
-			Left (_, _, value) -> return $ Just value
-			Right cases -> case solve (others ++ cases) of
-				Just ((nContext, nCond, nQuery), nOthers) ->
-					evalWith nOthers nQuery nContext nCond
-				Nothing -> return $ Nothing
-	context = Context { extra = Map.empty, vars = [0 ..] }
-	res = evalWith [] query context Condition.always
+			Nothing -> undefined
+			Just next -> iterate next
+	state = State {
+		converter = converter, 
+		vars = [0 ..],
+		scopes = [Set.empty],
+		scopeIndex = 0,
+		condition = Condition.always }
+	res = do
+		r <- run query context state
+		iterate r
 
--- Constructs a unrestricted variable within a query.
-var :: (Ord s, Ord v, Monad m) => QueryT s v m (QTerm v)
-var = QueryT run' where
-	run' _ context cond = case vars context of
-		(head : tail) -> return $ Left $
-			(context { vars = tail }, cond, QTerm $ STerm.var head)
 
--- Loads a term into a query.
-term :: (Ord s, Ord v, Monad m) => Term s (QTerm v) -> QueryT s v m (QTerm v)
-term x = QueryT run' where
-	run' system context cond = res where
-		(nTerm, nContext) = runState (load system x) context
-		res = return $ Left (nContext, cond, QTerm nTerm)
+-- Gets a new variable in the current scope.
+newVar :: (Ord v) => State q t n v -> (State q t n v, v)
+newVar state = res where
+	(var : nVars) = vars state
+	(scope : oScopes) = scopes state
+	res = (state {
+		vars = nVars,
+		scopes = (Set.insert var scope : oScopes) }, var)
 
--- Constructs a term consisting of a certain number of iterated applications of the given
--- symbol to the given term.
-iter :: (Ord s, Ord v, Monad m) => Integer -> s -> QTerm v -> QueryT s v m (QTerm v)
-iter 0 sym t = return t
-iter n sym t = do
-	upper <- iter (n - 1) sym t
-	term (Term.app sym [Var upper])
+-- Raises a variable from the given scope to the next higher scope.
+raiseVar :: (Ord v) => Int -> v -> State q t n v -> State q t n v
+raiseVar index var state = res where
+	depth = scopeIndex state - index
+	(lower, cur : next : higher) = List.splitAt depth $ scopes state
+	nScopes = lower ++ (Set.delete var cur : Set.insert var next : higher)
+	res = state { scopes = nScopes }
 
--- Restricts computation to cases where the given terms are equal.
-equal :: (Ord v, Monad m) => QTerm v -> QTerm v -> QueryT s v m ()
-equal (QTerm x) (QTerm y) = QueryT run' where
-	run' system context cond = res where
-		iContext = Internal.context $ System.source system
-		nCond = Condition.conjunction iContext [cond, Condition.ceq iContext x y]
-		res = return $ Right [(context, nCond, return ())]
+		
+-- A query that returns an unrestricted variable term.
+var :: (Monad m, Ord v) => QueryT s v m v
+var = QueryT (\_ state ->
+	let (nState, var) = newVar state
+	in return $ Simple nState var)
+	
+-- A query that returns an applicative term.
+app :: (Monad m, Ord v) => s -> [v] -> QueryT s v m v
+app sym args = QueryT (\context state ->
+	let (nConverter, term) = tapp context (converter state) sym args
+	in let (nState, var) = newVar state
+	in return $ Simple (nState {
+		converter = nConverter,
+		condition = Condition.restrictFromList context
+			[(var, term)] $ condition state }) var)
 
--- A query that considers multiple computations with the assumption that at most one
--- has a solution.
-branch :: (Monad m) => [QueryT s v m a] -> QueryT s v m a
-branch [] = mzero
-branch cases = List.foldl1 mplus cases
+-- Requires the given terms to be equivalent in the remainder of a query's computational
+-- path.
+equal :: (Monad m, Ord v) => v -> v -> QueryT s v m ()
+equal x y = QueryT (\context state -> return $ Complex $ Break
+	(Condition.conjunction context [condition state,
+		Condition.solutionFromList [(x, Condition.tvar context y)]])
+	(\nCond -> return $ Simple (state { condition = nCond }) ()))
 
--- Deconstructs an iterated symbol application. The given inner query will be called for
--- the final (and possibly intermediate) steps of the application chain.
-uniter :: (Ord s, Ord v, Monad m) => s -> (Integer -> QTerm v -> QueryT s v m a)
-	-> QTerm v -> QueryT s v m a
-uniter sym m t = uniter' [] 0 sym m t where
-	uniter' vars n sym m t = branch [a, b] where
-		a = do
-			v <- var
-			symApp <- term (Term.app sym [Var v])
-			equal t symApp
-			uniter' (v : vars) (n + 1) sym m v
-		b = do
-			nT <- var
-			equal t nT
-			discard vars
-			m n nT
+-- Constructs a query that branches into multiple computation paths.
+branch :: (Monad m, Ord v) => [QueryT s v m a] -> QueryT s v m a
+branch = undefined
 
--- Removes a set of variables from consideration in a query, for performance reasons.
--- After discarding a variable, no term that references it may be used in a query
--- operation.
-discard :: (Ord s, Ord v, Monad m) => [QTerm v] -> QueryT s v m ()
-discard terms = QueryT run' where
-	run' _ context cond = return $ Left (context, Condition.exists
-		(List.foldl (\a (QTerm t) -> Set.union a (STerm.vars t)) Set.empty terms)
-		cond, ())
+-- Constructs a scoped query. The inner query will operate on a different variable set
+-- than the outer query, and conversion between the variable sets is explicit.
+scoped :: forall s v m a. (Monad m, Ord v)
+	=> (forall n. (Ord n)
+		=> (v -> n)
+		-> (n -> QueryT s n m v) 
+		-> QueryT s n m a)
+	-> QueryT s v m a
+scoped inner = res where
+	lowerState state = state {
+		scopes = Set.empty : scopes state,
+		scopeIndex = scopeIndex state + 1 }
+	raiseState state = state {
+		scopes = List.tail $ scopes state,
+		scopeIndex = scopeIndex state - 1,
+		condition = Condition.exists (List.head $ scopes state) $ condition state }
+	raiseVarQuery index var = QueryT (\_ state ->
+		return $ Simple (raiseVar index var state) var)
+	res :: QueryT s v m a
+	res = QueryT (\context state -> do
+		let iState = lowerState state
+		let iQuery = inner id (raiseVarQuery $ scopeIndex iState) :: QueryT s v m a
+		r <- run iQuery context iState
+		rbind r (\niState value -> return $ Simple (raiseState niState) value))
