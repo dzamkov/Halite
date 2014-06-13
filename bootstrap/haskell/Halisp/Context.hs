@@ -37,7 +37,6 @@ data Transformation u s = Transformation {
 	target :: Term u s Int,
 	
 	-- Tries applying this transformation to an application of its associated symbol.
-	-- The transformation may be applied multiple times.
 	apply :: forall n. Vector (Term u s n) -> Maybe (Term u s n) }
 
 -- Describes the basic properties and reductions of a set of symbols.

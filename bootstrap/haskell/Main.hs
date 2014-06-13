@@ -1,24 +1,13 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Main (main) where
 
-import Halisp.Term (Term, var, app)
+import Halisp.Term (Term)
 import qualified Halisp.Term as Term
 import Halisp.System (System)
 import qualified Halisp.System as System
-import qualified Halisp.System.Internal as Internal
-import qualified Halisp.System.Term as ITerm
-import Halisp.Query (QueryT, Query)
-import qualified Halisp.Query as Query
-import qualified Data.Vector as Vector
+import qualified Halisp.Context as Context
 import qualified Halisp.Parser as Parser
-import qualified Halisp.Condition as Condition
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Maybe (fromJust)
-import Control.Monad.Trans
-import Debug.Trace (trace)
-import qualified Halisp.Interpreter as Interpreter
-import Text.PrettyPrint
+import qualified Halisp.Converter as Converter
 
 term = Term.map undefined . Parser.parse Parser.term
 

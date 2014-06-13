@@ -20,16 +20,11 @@ module Halisp.Condition (
 	simple,
 	simples,
 	solution,
-	solutionFromList,
+	substitution,
 	vars,
 	map,
 	sub,
 	exists,
-	existsFromList,
-	existsRight,
-	existsRightWith,
-	existsRightWithFromList,
-	existsRightInt,
 	conjunction,
 	disjunction,
 	(==^),
@@ -37,8 +32,6 @@ module Halisp.Condition (
 	(||^),
 	bind,
 	flip,
-	join,
-	joinInt,
 	extract,
 	extractToList,
 	isExtractable,
@@ -47,7 +40,7 @@ module Halisp.Condition (
 	coalesce
 ) where
 
-import Prelude hiding (map, fmap, flip)
+import Prelude hiding (map, mapM, fmap, flip)
 import Halisp.Region (Region)
 import qualified Halisp.Region as Region
 import Data.Set (Set)
@@ -56,21 +49,34 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.List as List
 import Data.Maybe (fromJust)
-import Debug.Trace (trace)
+import Data.Traversable (mapM)
+import Control.Monad.State (runState, get, put, modify)
+import Control.Monad.Identity (runIdentity)
 
 -- Identifies a type constructor for a formula, which includes both terms and constraints.
 class Formula f where
 
+	-- Applies a one-to-one mapping to the variables in a formula using a monadic context.
+	fmapM :: (Monad m, Ord v, Ord n) => (v -> m n) -> f v -> m (f n)
+
 	-- Gets the complete set of variables referenced in a formula.
 	fvars :: (Ord v) => f v -> Set v
+	fvars f = snd $ runState (fmapM (\v -> do
+		s <- get
+		put (Set.insert v s)
+		return v) f) Set.empty
 	
 	-- Determines whether the given formula refers to (or depends on) any variable for
 	-- which the given predicate returns true.
 	frefers :: (Ord v) => (v -> Bool) -> f v -> Bool
-	frefers m f = List.any m $ Set.toList $ fvars f
+	frefers m f = snd $ runState (fmapM (\v -> do
+		s <- get
+		put (m v || s)
+		return v) f) False
 	
 	-- Applies a one-to-one mapping to the variables in a formula.
 	fmap :: (Ord v, Ord n) => (v -> n) -> f v -> f n
+	fmap m f = runIdentity $ fmapM (return . m) f
 	
 -- Identifies a type constructor for a term.
 class (Formula t) => Term r t where
@@ -370,20 +376,38 @@ simples :: (Ord v, Formula k) => [k v] -> Condition k t v
 simples cons = Condition { degree = 0, region = Region.single,
 	rules = [(Region.single, Map.empty, List.map (fmap Left) cons)] }
 
--- Constructs a condition that is satisfied exactly when the given substitution is in
--- effect.
-solution :: (Ord v, Formula t) => Map v (t v) -> Condition k t v
-solution subs = Condition { degree = 0, region = Region.single,
-	rules = [(Region.single, Map.map (fmap Left) subs, [])] }
-	
--- TODO: Prevent creation of solutions that reference substituted variables by making
--- the substitution type and the reference type distinct (using existential
--- quantification).
+-- Identifies a type that can be used to construct a solution condition.
+class Solution s t v where
 
--- Constructs a condition that is satisfied exactly when the given substitution is in
--- effect.
-solutionFromList :: (Ord v, Formula t) => [(v, t v)] -> Condition k t v
-solutionFromList subs = solution $ Map.fromList subs
+	-- Constructs a condition that contains exactly the given solution.
+	solution :: s -> Condition k t v
+
+instance (Ord v, Ord n, Formula t) => Solution (Map v (t n)) t v where
+	solution subs =
+		let (nSubs, (degree, _)) = runState (mapM (fmapM (\v -> do
+			(degree, map) <- get
+			case Map.lookup v map of
+				Just n -> return $ Right n
+				Nothing -> do
+					let n = degree
+					put (degree + 1, Map.insert v n map)
+					return $ Right n)) subs) (0, Map.empty)
+		in Condition { degree = degree, region = Region.single,
+			rules = [(Region.single, nSubs, [])] }
+
+instance (Ord v, Ord n, Formula t) => Solution [(v, t n)] t v where
+	solution = solution . Map.fromList
+	
+instance (Ord v, Formula t) => Solution (Int, Map v (t Int)) t v where
+	solution (degree, subs) = Condition { degree = degree, region = Region.single,
+		rules = [(Region.single, Map.map (fmap Right) subs, [])] }
+
+-- Constructs a condition that is satisfied when a substitution from a variable to a term
+-- sharing the same variable set is in effect, assuming that the term does not refer to
+-- the variable.
+substitution :: (Ord v, Formula t) => v -> t v -> Condition k t v
+substitution var term = Condition { degree = 0, region = Region.single,
+	rules = [(Region.single, Map.singleton var (fmap Left term), [])] }
 
 -- Gets all of the variables referenced in a condition.
 vars :: (Ord v, Formula k, Formula t) => Condition k t v -> Set v
@@ -417,64 +441,47 @@ sub context m cond = res where
 			ceq context (fmap Left $ m v) (tsub context mapVar t) : a)
 			(List.map (csub context mapVar) c) s))) $ rules cond
 	res = construct context (degree cond) (region cond) [] [] conds
-	
--- Existentially quantifies the given variables within the given condition.
-exists :: (Ord v, Formula k, Formula t) => Set v -> Condition k t v -> Condition k t v
-exists vars cond = existsFromList (Set.toList vars) cond
 
--- Existentially quantifies the given variables within the given condition.
-existsFromList :: (Ord v, Formula k, Formula t) => [v]
-	-> Condition k t v -> Condition k t v
-existsFromList vars cond = res where
-	(vMap, bound) = List.foldl
-		(\(m, b) v -> (Map.insert v b m, b + 1))
-		(Map.empty, 0) vars
-	mapVar v = case Map.lookup v vMap of
-		Just i -> Right i
-		Nothing -> Left v
-	res = existsRightInt bound (map mapVar cond)
+-- Identifies a type that can be used to existentially quantify a condition.
+class Exists s t v n where
+
+	-- Existentially quantifies a set of variables within a condition.
+	exists :: (Formula k) => s -> Condition k t v -> Condition k t n
+
+instance (Ord v, Ord n, Formula t) => Exists (v -> Maybe n) t v n where
+	exists m cond =
+		let (nRules, (nDegree, _, removed)) = runState (mapM (\(r, s, c) -> do
+			let fmapE f = fmapM (\v -> case v of
+				Right i -> return $ Right i
+				Left v -> case m v of
+					Just n -> return $ Left n
+					Nothing -> do
+						(degree, map, removed) <- get
+						case Map.lookup v map of
+							Just n -> return $ Right n
+							Nothing -> do
+								let n = degree
+								put (degree + 1, Map.insert v n map, removed)
+								return $ Right n) f
+			nS' <- mapM fmapE s
+			nC <- mapM fmapE c
+			let nS = Map.mapKeys (\k -> maybe undefined id $ m k) $
+				Map.filterWithKey (\k _ -> maybe False (const True) $ m k) nS'
+			modify (\(degree, map, _) -> (degree, map, True))
+			return (r, nS, nC)) $ rules cond) (degree cond, Map.empty, False)
+		in if removed 
+			then prune nDegree (region cond) (List.filter (\(_, s, c) ->
+				not (Map.null s && List.null c)) nRules)
+			else Condition { degree = nDegree, region = region cond, rules = nRules }
+
+instance (Ord v, Formula t) => Exists (v -> Bool) t v v where
+	exists m = exists (\v -> if m v then Nothing else Just v)
 	
--- Existentially quantifies all right variables  within the given condition.
-existsRight :: (Ord v, Ord n, Formula k, Formula t)
-	=> Condition k t (Either v n) -> Condition k t v
-existsRight cond = existsRightWith (Set.mapMonotonic (either undefined id) $
-	Set.filter (either (const False) (const True)) $ vars cond) cond
-	
--- Existentially quantifies all right variables (which must be enumerated) within the
--- given condition.
-existsRightWith :: (Ord v, Ord n, Formula k, Formula t) => Set n
-	-> Condition k t (Either v n) -> Condition k t v
-existsRightWith vars cond = existsRightWithFromList (Set.toList vars) cond
-	
--- Existentially quantifies all right variables (which must be enumerated) within the
--- given condition.
-existsRightWithFromList :: (Ord v, Ord n, Formula k, Formula t) => [n]
-	-> Condition k t (Either v n) -> Condition k t v
-existsRightWithFromList vars cond = res where
-	(vMap, bound) = List.foldl
-		(\(m, b) v -> (Map.insert v b m, b + 1))
-		(Map.empty, 0) vars	
-	res = existsRightInt bound (map (either Left (Right . (Map.!) vMap)) cond)
-	
--- Existentially quantifies all right variables (which must be less then the given 
--- bound) within the given condition.
-existsRightInt :: (Ord v, Formula k, Formula t)
-	=> Int -> Condition k t (Either v Int) -> Condition k t v
-existsRightInt bound cond = res where
-	mapVar (Left (Left x)) = Left x
-	mapVar (Left (Right x)) = Right (degree cond + x)
-	mapVar (Right x) = Right x
-	lefts = Map.mapKeysMonotonic (either id undefined) .
-		Map.filterWithKey (\k _ -> either (const True) (const False) k)
-	(nRules, anyRemoved) = List.foldl (\(rules, anyRemoved) (v, s, c) ->
-		case (lefts s, c) of
-			(Map.null -> True, []) -> (rules, True)
-			(subs, cons) -> ((v, Map.map (fmap mapVar) subs,
-				List.map (fmap mapVar) cons) : rules, anyRemoved))
-		([], False) $ rules cond
-	res = if anyRemoved then prune (degree cond + bound) (region cond) nRules
-		else Condition { degree = degree cond + bound,
-			region = region cond, rules = nRules }	
+instance (Ord v, Formula t) => Exists (Set v) t v v where
+	exists set = exists (\v -> Set.member v set)
+
+instance (Ord v, Formula t) => Exists [v] t v v where
+	exists list = exists $ Set.fromList list
 
 -- Computes the conjunction of many conditions.
 conjunction :: (Ord v, Constraint r k t) => r -> [Condition k t v] -> Condition k t v
@@ -539,26 +546,6 @@ bind context m cond = res where
 flip :: (Ord a, Ord b, Formula k, Formula t)
 	=> Condition k t (Either a b) -> Condition k t (Either b a)
 flip = map (either Right Left)
-	
--- Joins two conditions, representing relations into one.
-join :: (Ord a, Ord b, Ord c, Constraint r k t) => r
-	-> Condition k t (Either a b) 
-	-> Condition k t (Either b c)
-	-> Condition k t (Either a c)
-join context a b = existsRight $ conjunction context
-	[map (either (Left . Left) Right) a,
-	map (either Right (Left . Right)) b]
-	
--- Joins two conditions, representing relations into one.
-joinInt :: (Ord a, Ord b, Constraint r k t) => r -> Int
-	-> Condition k t (Either a Int) 
-	-> Condition k t (Either Int b)
-	-> Condition k t (Either a b)
-joinInt context dim a b = existsRightInt dim $ conjunction context
-	[map (either (Left . Left) Right) a,
-	map (either Right (Left . Right)) b]
-
-
 
 -- Gets the region of a condition is affected by constraints.
 constraintRegion :: Condition k t v -> Region

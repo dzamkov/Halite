@@ -154,16 +154,11 @@ fromLists :: (Ord v, Term r t s) => r
 	-> [(s, Vector (t v), v)]
 	-> System t s
 fromLists context appApp appArb = res where
-	conjs m args accum = Vector.ifoldl (\a i t ->
-		(Left $ m i, Condition.fmap Right t) : a) accum args
-	appAppConds = List.map (\(xSym, xArgs, ySym, yArgs) ->
-		(xSym, ySym, Condition.existsRight $ Condition.solutionFromList $
-			conjs Right xArgs $ conjs Left yArgs [])) appApp
-	appArbConds = List.map (\(sym, args, var) ->
-		(sym, Condition.existsRight $
-			Condition.map (\v -> if v == Right var then Left Nothing else v) $
-			Condition.solutionFromList $
-			conjs Just args [])) appArb
+	conjs m args accum = Vector.ifoldl (\a i t -> (m i, t) : a) accum args
+	appAppConds = List.map (\(xSym, xArgs, ySym, yArgs) -> (xSym, ySym,
+		Condition.solution $ conjs Right xArgs $ conjs Left yArgs [])) appApp
+	appArbConds = List.map (\(sym, args, var) -> (sym, Condition.solution $
+		conjs Just args [(Nothing, Condition.tvar context var)])) appArb
 	transOps sym = (flip $ List.foldl (\a (xSym, ySym, cond) ->
 			(if sym == xSym then ((Forward, ySym, cond) :) else id) $
 			(if sym == ySym then ((Backward, xSym, Condition.flip cond) :) else id) $ a))

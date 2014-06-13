@@ -10,12 +10,8 @@ import qualified Data.List as List
 
 data Term a = Var a | Val Integer deriving (Eq, Ord, Show)
 instance Condition.Formula Term where
-	fvars (Var x) = Set.singleton x
-	fvars (Val x) = Set.empty
-	frefers m (Var x) = m x
-	frefers _ (Val x) = False
-	fmap m (Var x) = Var (m x)
-	fmap _ (Val x) = Val x
+	fmapM m (Var x) = m x >>= (return . Var)
+	fmapM m (Val x) = return (Val x)
 instance Condition.Term () Term where
 	tvar () x = Var x
 	tsub () m (Var x) = m x
@@ -23,17 +19,18 @@ instance Condition.Term () Term where
 
 data Cons a = Less (Term a) (Term a) deriving (Eq, Ord, Show)
 instance Condition.Formula Cons where
-	fvars (Less x y) = Set.union (Condition.fvars x) (Condition.fvars y)
-	frefers m (Less x y) = Condition.frefers m x || Condition.frefers m y
-	fmap m (Less x y) = Less (Condition.fmap m x) (Condition.fmap m y)
+	fmapM m (Less x y) = do
+		nX <- Condition.fmapM m x
+		nY <- Condition.fmapM m y
+		return $ Less nX nY
 instance Condition.Constraint () Cons Term where
 	csub () m (Less x y) = case (Condition.tsub () m x, Condition.tsub () m y) of
 		(Val x, Val y) -> Condition.fromBool (x < y)
 		(x, y) -> Condition.simple $ Less x y
 	ceq () (Val x) (Val y) = Condition.fromBool (x == y)
 	ceq () (Var x) (Var y) | x == y = Condition.always
-	ceq () (Var x) y = Condition.solutionFromList [(x, y)]
-	ceq () x (Var y) = Condition.solutionFromList [(y, x)]
+	ceq () (Var x) y = Condition.substitution x y
+	ceq () x (Var y) = Condition.substitution y x
 
 equal = Condition.ceq ()
 less x y = Condition.simple (Less x y)
@@ -57,7 +54,7 @@ assertSolutions expected cond = do
 		
 solution = do
 	let sol = [("a", Val 145), ("b", Val 200)]
-	let cond = Condition.solutionFromList sol
+	let cond = Condition.solution (sol :: [(String, Term ())])
 	assertValid (cond :: Condition Cons Term String)
 	assertSolutions [sol] cond
 	assertBool "isExtractable incorrect" (Condition.isExtractable cond)
@@ -125,7 +122,7 @@ permutations3 = do
 	assertSolutions sols cond
 	
 exists = do
-	let cond = Condition.existsFromList ["x"] $ Condition.conjunction () $
+	let cond = Condition.exists ["x"] $ Condition.conjunction () $
 		[oneOf (Var "x") [Val 0, Val 1, Val 2],
 		less (Var "x") (Val 1)]
 	assertBool "expected always" $ Condition.isAlways cond
@@ -147,7 +144,7 @@ indirect1 = do
 	assertSolutions sols cond
 
 indirect2 = do
-	let cond = Condition.existsFromList ["c"] $ Condition.conjunction () $
+	let cond = Condition.exists ["c"] $ Condition.conjunction () $
 		[oneOf (Var "a") [Val 0, Val 1],
 		equal (Var "d") (Var "c"),
 		equal (Var "e") (Var "b"),
@@ -174,10 +171,10 @@ general = do
 		_ -> False)
 
 challenge = do
-	let apart x y = Condition.existsRightInt 1 $ between
-		(Condition.fmap Left x) (Var $ Right 0) (Condition.fmap Left y)
+	let apart x y = Condition.exists (id :: Maybe a -> Maybe a) $ between
+		(Condition.fmap Just x) (Var $ Nothing) (Condition.fmap Just y)
 	let cond = Condition.bind () resolve $  Condition.bind () resolve $ 
-		(Condition.existsFromList ["c"] $ Condition.conjunction ()
+		(Condition.exists ["c"] $ Condition.conjunction ()
 		[between (Val 4) (Var "a") (Val 9),
 		equal (Var "b") (Var "c"),
 		between (Val 6) (Var "c") (Val 14),
