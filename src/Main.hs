@@ -1,7 +1,9 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 import Halite.Editor.Input
 import qualified System.Console.ANSI as ANSI
 import Control.Monad.State
-import qualified Data.List as List
+import Data.Monoid
+import Control.Applicative
 
 -- | A horizontal length in the terminal.
 type Width = Int
@@ -18,33 +20,77 @@ type Y = Int
 -- | A terminal color.
 type Color = (ANSI.ColorIntensity, ANSI.Color)
 
--- | A primitive editable unit with its independent meaning.
-data Atom
+-- | Sets the background color.
+setBack :: Color -> IO ()
+setBack (i, c) = ANSI.setSGR [ANSI.SetColor ANSI.Background i c]
+
+-- | Sets the foreground color.
+setFore :: Color -> IO ()
+setFore (i, c) = ANSI.setSGR [ANSI.SetColor ANSI.Foreground i c]
+
+-- | Describes a single-line colored string that can be displayed in the
+-- terminal.
+newtype Inline = Inline [(Color, String)] deriving (Monoid)
+
+-- | Constructs an 'Inline' for a string of uniform color.
+inlineUniform :: Color -> String -> Inline
+inlineUniform col str = Inline [(col, str)]
+
+-- | Constructs an 'Inline' for a space of the given length.
+inlineSpace :: Width -> Inline
+inlineSpace width = Inline [((ANSI.Dull, ANSI.Black), replicate width ' ')]
+
+-- | Determines the display width of an 'Inline'.
+inlineWidth :: Inline -> Width
+inlineWidth (Inline parts) = sum $ map (length . snd) parts
+
+-- | Draws an 'Inline' to the current cursor position.
+drawInline :: Inline -> IO ()
+drawInline (Inline parts) = do
+    setBack (ANSI.Dull, ANSI.Black)
+    forM_ parts $ \(color, str) -> do
+        setFore color
+        putStr str
+
+-- | Draws an 'Inline' to the current cursor position using a
+-- highlighted style.
+drawInlineHighlight :: Inline -> IO ()
+drawInlineHighlight (Inline parts) = do
+    setBack (ANSI.Vivid, ANSI.Blue)
+    setFore (ANSI.Vivid, ANSI.White)
+    forM_ parts $ \(_, str) -> putStr str
+
+-- | An expression that can be edited by the user. Note that this type
+-- may include display information in addition to the logical structure of
+-- the expression.
+data Expression
     = Hole
     | Word String
+    | App [Expression]
 
--- | An application tree of 'Atom's.
-data Phrase = Phrase Atom [Phrase]
+-- | Describes the context surronding an expression.
+data ExpressionContext
+    = Root
+    | WithinApp [Expression] [Expression] ExpressionContext
 
--- | Describes the context surronding a phrase.
-data PhraseContext
-    = CPhraseRoot
-    | CPhraseWithin Atom [Phrase] [Phrase] PhraseContext
+-- | Constructs an 'Inline' to display an expression.
+inlineExpression :: Expression -> Inline
+inlineExpression Hole = inlineUniform (ANSI.Vivid, ANSI.White) "_"
+inlineExpression (Word str) = inlineUniform (ANSI.Dull, ANSI.White) str
+inlineExpression (App []) = inlineUniform (ANSI.Vivid, ANSI.White) "()"
+inlineExpression (App (h : t)) =
+    inlineUniform (ANSI.Vivid, ANSI.White) "(" <>
+    inlineExpression h <>
+    mconcat (map (\e -> inlineSpace 1 <> inlineExpression e) t) <>
+    inlineUniform (ANSI.Vivid, ANSI.White) ")"
 
--- | A zipper for a phrase, which can target an atom or a sub-phrase.
-data PhraseZipper
-    = ZPhraseHead Atom [Phrase] PhraseContext
-    | ZPhrase Atom Phrase [Phrase] PhraseContext
-
--- | Constructs a zipper for a phrase with the given context.
-phraseZipper :: PhraseContext -> Phrase -> PhraseZipper
-phraseZipper c (Phrase h []) = ZPhraseHead h [] c
-phraseZipper c (Phrase h (t : r)) = ZPhrase h t r c
-
--- | Describes an edit buffer from the perspective of the user cursor.
+-- | Describes an edit buffer from the perspective of the user's cursor.
+-- This should include enough information to extract the logical expression for
+-- the buffer, the currently displayed contents of the window, and the
+-- edit context the user is in.
 data Window
-    = Over PhraseZipper
-    | Writing String [Phrase] PhraseContext
+    = Over Expression ExpressionContext
+    | Writing String ExpressionContext
 
 -- | Describes a navigation command.
 data Navigation
@@ -64,113 +110,82 @@ getCommand = do
     ch <- getHiddenChar
     case ch of
         'h' -> return $ Navigate NLeft
-        'j' -> return $ Navigate NOut
-        'k' -> return $ Navigate NIn
-        'l' -> return $ Navigate NRight
+        'j' -> return $ Navigate NRight
+        'k' -> return $ Navigate NOut
+        'l' -> return $ Navigate NIn
         'q' -> return Quit
         _ -> getCommand
 
--- | Sets the background color.
-setBack :: Color -> IO ()
-setBack (i, c) = ANSI.setSGR [ANSI.SetColor ANSI.Background i c]
-
--- | Sets the foreground color.
-setFore :: Color -> IO ()
-setFore (i, c) = ANSI.setSGR [ANSI.SetColor ANSI.Foreground i c]
-
--- | Uses the given drawing procedure to draw an object normally.
-drawNormal :: (Bool -> IO ()) -> IO ()
-drawNormal x = x True
-
--- | Uses the given drawing procedure to draw a highlighted object.
-drawHighlight :: (Bool -> IO ()) -> IO ()
-drawHighlight x = do
-    setBack (ANSI.Vivid, ANSI.Blue)
-    setFore (ANSI.Vivid, ANSI.White)
-    x False
-
--- | Determines the draw width of an 'Atom', and prepares a procedure to
--- draw it.
-drawAtom :: Atom -> (Width, Bool -> IO ())
-drawAtom Hole = (1, \color -> do
-    when color $ setFore (ANSI.Vivid, ANSI.Cyan)
-    putStr "_")
-drawAtom (Word str) = (length str, \color -> do
-    when color $ setFore (ANSI.Dull, ANSI.White)
-    putStr str)
-
--- | Determines the draw width of a list of 'Phrase's, each prefixed with
--- a space, and prepares a procedure to draw it.
-drawItems :: [Phrase] -> (Width, Bool -> IO ())
-drawItems = List.foldl' (\(w, d) item ->
-    let (iWidth, iDraw) = drawPhrase item
-    in (w + 1 + iWidth, \color -> do
-        d color
-        putStr " "
-        iDraw color))
-    (0, const $ return ())
-
--- | Determines the draw width of a 'Phrase', and prepares a procedure to
--- draw it.
-drawPhrase :: Phrase -> (Width, Bool -> IO ())
-drawPhrase (Phrase atom []) = drawAtom atom
-drawPhrase (Phrase head tail) =
-    let (hWidth, hDraw) = drawAtom head
-        (tWidth, tDraw) = drawItems tail
-    in (1 + hWidth + tWidth + 1, \color -> do
-        when color $ setFore (ANSI.Vivid, ANSI.White)
-        putStr "("
-        hDraw color
-        tDraw color
-        when color $ setFore (ANSI.Vivid, ANSI.White)
-        putStr ")")
-
 -- | Processes a navigate command on an 'Over' state, and performs the
 -- corresponding drawing operations.
-navigate :: Navigation -> PhraseZipper -> IO PhraseZipper
-navigate NLeft st@(ZPhraseHead _ _ CPhraseRoot) = return st
-navigate NLeft st@(ZPhrase _ _ _ CPhraseRoot) = return st
-navigate NRight (ZPhraseHead h (t : r) c) = do
-    setBack (ANSI.Dull, ANSI.Black)
-    let (_, hD) = drawAtom h
-    hD True
-    putStr " "
-    let (tW, tD) = drawPhrase t
-    setBack (ANSI.Vivid, ANSI.Blue)
-    setFore (ANSI.Vivid, ANSI.White)
-    tD False
-    ANSI.cursorBackward tW
-    return (phraseZipper (CPhraseWithin h [] r c) t)
-navigate NRight st@(ZPhrase _ _ _ CPhraseRoot) = return st
-navigate NIn st@(ZPhraseHead _ _ _) = return st
-navigate NIn (ZPhrase h t r c) = do
-    setBack (ANSI.Dull, ANSI.Black)
-    setFore (ANSI.Vivid, ANSI.White)
-    putStr "("
-    let (hW, _) = drawAtom h
-    ANSI.cursorForward hW
-    let (tW, tD) = drawItems (t : r)
-    tD True
-    putStr ")"
-    ANSI.cursorBackward (hW + tW + 1)
-    return (ZPhraseHead h (t : r) c)
+navigate :: Navigation
+    -> (Expression, ExpressionContext)
+    -> IO (Expression, ExpressionContext)
+navigate NLeft st@(e, cxt) = res where
+    goLeft _ Root = Nothing
+    goLeft e (WithinApp (n : l) r cxt) =
+        let nInline = inlineExpression n
+        in Just (nInline, 1, n, WithinApp l (e : r) cxt)
+    goLeft e (WithinApp [] r cxt) =
+        (\(i, w, e, c) -> (i, w + 1, e, c)) <$> goLeft (App (e : r)) cxt
+    res = case goLeft e cxt of
+        Nothing -> return st
+        Just (nInline, w, n, nCxt) -> do
+            let eInline = inlineExpression e
+            drawInline eInline
+            ANSI.cursorBackward (inlineWidth nInline + w + inlineWidth eInline)
+            drawInlineHighlight nInline
+            ANSI.cursorBackward (inlineWidth nInline)
+            return (n, nCxt)
+navigate NRight st@(e, cxt) = res where
+    goRight _ Root = Nothing
+    goRight e (WithinApp l (n : r) cxt) =
+        let nInline = inlineExpression n
+        in Just (nInline, 1, n, WithinApp (e : l) r cxt)
+    goRight e (WithinApp l [] cxt) =
+        (\(i, w, e, c) -> (i, w + 1, e, c)) <$> goRight (App (l ++ [e])) cxt
+    res = case goRight e cxt of
+        Nothing -> return st
+        Just (nInline, w, n, nCxt) -> do
+            let eInline = inlineExpression e
+            drawInline eInline
+            ANSI.cursorForward w
+            drawInlineHighlight nInline
+            ANSI.cursorBackward (inlineWidth nInline)
+            return (n, nCxt)
+navigate NIn st@(Hole, _) = return st
+navigate NIn st@(Word _, _) = return st
+navigate NIn st@(App [], _) = return st
+navigate NIn (e@(App (h : t)), cxt) = do
+    let eInline = inlineExpression e
+        hInline = inlineExpression h
+    drawInline eInline
+    ANSI.cursorBackward (inlineWidth eInline - 1)
+    drawInlineHighlight hInline
+    ANSI.cursorBackward (inlineWidth hInline)
+    return (h, WithinApp [] t cxt)
+navigate NOut st@(_, Root) = return st
+navigate NOut (e, WithinApp l r cxt) = do
+    let f = App $ reverse l ++ [e] ++ r
+        fInline = inlineExpression f
+        bWidth = 1 + sum (map (\e -> 1 + inlineWidth (inlineExpression e)) l)
+    ANSI.cursorBackward bWidth
+    drawInlineHighlight fInline
+    ANSI.cursorBackward (inlineWidth fInline)
+    return (f, cxt)
 
 main :: IO ()
 main = do
-    let pHead = Word "test"
-        p2 = Phrase Hole []
-        p3 = Phrase (Word "x") [Phrase (Word "y") [], Phrase (Word "z") []]
-        phrase = Phrase pHead [p2, p3]
-        (pWidth, pDraw) = drawPhrase phrase
-    drawHighlight pDraw
-    ANSI.cursorBackward pWidth
-    let win = Over $ ZPhrase pHead p2 [p3] CPhraseRoot
-        loop (Over zipper) = do
+    let test = App [Word "test", Hole, App [Word "x", Word "y", Word "z"]]
+    drawInlineHighlight $ inlineExpression test
+    ANSI.cursorBackward $ inlineWidth $ inlineExpression test
+    let win = Over test Root
+        loop (Over exp cxt) = do
             command <- getCommand
             case command of
                 Navigate nav -> do
-                    nZipper <- navigate nav zipper
-                    loop (Over nZipper)
+                    (nExp, nCxt) <- navigate nav (exp, cxt)
+                    loop (Over nExp nCxt)
                 Quit -> return ()
-        loop (Writing _ _ _) = undefined -- TODO
+        loop (Writing _ _) = undefined -- TODO
     loop win
