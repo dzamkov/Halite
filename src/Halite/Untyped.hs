@@ -1,18 +1,11 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE EmptyDataDecls #-}
-{-# LANGUAGE StandaloneDeriving #-}
 module Halite.Untyped where
 
+import Void
 import GHC.Generics
 import Control.Applicative
 import Control.Monad (ap)
-
--- | The empty type.
-data Void
-deriving instance Eq Void
-deriving instance Ord Void
-deriving instance Show Void
 
 -- | A term in untyped lambda calculus with variables of type @a@.
 data Term a

@@ -1,10 +1,13 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams #-}
 module Halite.Editor where
 
 import Halite.Expression
+import Halite.Editor.Expression
 import Halite.Editor.Input
 import Halite.Editor.Draw (sync, runDraw)
-import Halite.Editor.Display
+import qualified Halite.Editor.Display as Display
+import Halite.Editor.Control (AnyControl (..))
+import qualified Halite.Editor.Control as Control
 import Control.Monad.State
 
 -- | Describes a navigation command.
@@ -33,26 +36,12 @@ getCommand = do
 
 main :: IO ()
 main = do
-    let ctx = Context {
-            name = id,
-            pos = (0, 0),
-            ctxOut = Nothing,
-            ctxLeft = Nothing,
-            ctxRight = Nothing }
-        exp = Exp (Var "hello")
-        cursor = display exp ctx
-    flip evalStateT undefined $ do
-        sync
-        let win cursor = do
-                runDraw (highlight cursor)
-                command <- liftIO getCommand
-                let navigate f = do
-                        runDraw (unhighlight cursor)
-                        win (f cursor)
-                case command of
-                    Navigate NLeft -> navigate navLeft
-                    Navigate NRight -> navigate navRight
-                    Navigate NIn -> navigate navInLeft
-                    Navigate NOut -> navigate navOut
-                    Quit -> return ()
-        win cursor
+    let ?style = Display.defaultStyle
+    let exp = Exp (Var "hello")
+        lookup = Atom
+        shape = Display.Inline 80
+        control = build exp shape lookup
+    case control of
+        AnyControl control -> flip evalStateT undefined $ do
+            sync
+            runDraw $ Control.draw control False

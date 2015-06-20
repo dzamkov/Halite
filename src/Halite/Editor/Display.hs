@@ -1,86 +1,101 @@
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE ImplicitParams #-}
 module Halite.Editor.Display where
 
-import Halite.Expression
-import Halite.Editor.Draw (X, Y, Draw)
+import Void
+import Halite.Editor.Draw (Width, Height, X, Y, Draw)
 import qualified Halite.Editor.Draw as Draw
-import Data.Maybe (fromMaybe)
 
--- | Describes the location of the user's cursor in a window, along with
--- the surronding context.
-data Cursor = Cursor {
+-- | Describes a position-invariant area in which text content can (or has)
+-- fit into.
+data Shape
 
-    -- | Draws the contents under the cursor with highlighting.
-    highlight :: Draw,
+    -- | A shape that occupies a horizontal section of a single line.
+    = Inline Width
 
-    -- | Draws the contents under the cursor without highlighting.
-    unhighlight :: Draw,
+    -- | A shape that occupies a block-shaped region of at least two lines.
+    -- The first line may be indented by a given amount while the last line
+    -- may end short (at the given offset).
+    | Block Width Height X X
+    deriving (Eq, Ord, Show)
 
-    -- | Navigates inward ("drilling" into the expression), starting
-    -- from the left of the current cursor.
-    navInLeft :: Cursor,
+-- | Indicates whether a 'Draw' should be highlighted.
+type Highlight = Bool
 
-    -- | Navigates inward ("drilling" into the expression), starting
-    -- from the right of the current cursor.
-    navInRight :: Cursor,
+-- | Describes the graphical contents of a position-invariant area with
+-- unfilled /holes/ of type @a@.
+data Layout a = Layout {
 
-    -- | Navigates outward.
-    navOut :: Cursor,
+    -- | The shape of the layout area, including holes.
+    shape :: Shape,
 
-    -- | Navigates left.
-    navLeft :: Cursor,
+    -- | The offset of the given hole in layout coordinates.
+    offset :: a -> (X, Y),
 
-    -- | Navigates right.
-    navRight :: Cursor }
+    -- | Draws the contents of the layout, excluding holes.
+    drawAround :: Highlight -> Draw }
 
--- | The context needed to display an expression.
-data Context a = Context {
+-- | Describes a figure with an ordered collection of /holes/ of type @a@.
+-- The shape and contents of the holes can be given to produce a 'Draw'.
+data Display a = Eq a => Display {
 
-    -- | Gets the name of the given variable.
-    name :: a -> String,
+    -- | Gets the hole directly before the given hole.
+    before :: Maybe a -> Maybe a,
 
-    -- | The location of the topmost, leftmost point of the expression.
-    pos :: (X, Y),
+    -- | Gets the hole directly after the given hole.
+    after :: Maybe a -> Maybe a,
 
-    -- | The cursor selecting the expression that encloses this one.
-    ctxOut :: Maybe Cursor,
+    -- | Gets the bounding shape that the contents of the given hole must fit
+    -- in.
+    limits :: a -> Shape,
 
-    -- | The cursor selecting the expression to the immediate left of this one.
-    ctxLeft :: Maybe Cursor,
+    -- | Constructs a layout for this 'Display' by assigning a shape to
+    -- all holes.
+    layout :: (a -> Shape) -> Layout a }
 
-    -- | The cursor selecting the expression to the immediate right of this one.
-    ctxRight :: Maybe Cursor }
+-- | Gets an ordered list of all holes in a display.
+holes :: Display a -> [a]
+holes display = go (after display Nothing) where
+    go Nothing = []
+    go cur@(Just head) = head : go (after display cur)
 
--- | The appearance for highlighted text.
-highlightAppr :: Draw.Appearance
-highlightAppr = (Draw.lightBlue, Draw.white)
+-- | Describes a global visual style for the editor.
+data Style = Style {
 
--- | The background for most text.
-normalBack :: Draw.Color
-normalBack = Draw.black
+    -- | The appearance of highlighted text.
+    highlightAppr :: Draw.Appearance,
 
--- | The foreground color for normal text.
-textFore :: Draw.Color
-textFore = Draw.lightGray
+    -- | The background for most text.
+    normalBack :: Draw.Color,
 
--- | The foreground color for an operator.
-operatorFore :: Draw.Color
-operatorFore = Draw.white
+    -- | The foreground for an atomic symbol.
+    atomFore :: Draw.Color,
 
--- | Displays a selectable string.
-displayString :: Draw.Color -> String -> Context a -> Cursor
-displayString fore str ctx = cursor 0 where
-    cursor depth = Cursor {
-        highlight = Draw.string highlightAppr (pos ctx) str,
-        unhighlight = Draw.string (normalBack, fore) (pos ctx) str,
-        navInLeft = cursor (depth + 1),
-        navInRight = cursor (depth + 1),
-        navOut = fromMaybe (cursor depth) (ctxOut ctx),
-        navLeft = maybe (cursor depth)
-            ((!! depth) . iterate navInRight) (ctxLeft ctx),
-        navRight = maybe (cursor depth)
-            ((!! depth) . iterate navInLeft) (ctxRight ctx) }
+    -- | The foreground color for an operator.
+    operatorFore :: Draw.Color }
 
--- | Displays an expression using the given context.
-display :: Expression a -> Context a -> Cursor
-display (Exp (Var x)) ctx = displayString textFore (name ctx x) ctx
-display (Exp Hole) ctx = displayString operatorFore "_" ctx
+-- | A good default 'Style'.
+defaultStyle :: Style
+defaultStyle = Style {
+    highlightAppr = (Draw.lightBlue, Draw.white),
+    normalBack = Draw.black,
+    atomFore = Draw.lightGray,
+    operatorFore = Draw.white }
+
+-- | Constructs a 'Display' with no holes.
+concrete :: Shape -> (Highlight -> Draw) -> Display Void
+concrete shape draw = Display {
+    before = const Nothing,
+    after = const Nothing,
+    limits = undefined,
+    layout = const Layout {
+        shape = shape,
+        offset = undefined,
+        drawAround = draw }}
+
+-- | Constructs a 'Display' for an atomic symbol.
+atom :: (?style :: Style) => String -> Display Void
+atom str = concrete (Inline (length str)) $ \highlight ->
+    let appr True = highlightAppr ?style
+        appr False = (normalBack ?style, atomFore ?style)
+    in Draw.string (appr highlight) (0, 0) str

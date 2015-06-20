@@ -151,3 +151,9 @@ string appr pos str = Draw [DrawStr appr pos str]
 -- | Constructs a draw operation for a space.
 space :: Color -> (X, Y) -> Width -> Draw
 space col pos width = Draw [DrawSpace col pos width]
+
+-- | Applies a translation to a draw operation.
+translate :: (X, Y) -> Draw -> Draw
+translate (tX, tY) (Draw ops) = Draw $ map translateOp ops where
+    translateOp (DrawStr appr (x, y) str) = DrawStr appr (tX + x, tY + y) str
+    translateOp (DrawSpace col (x, y) w) = DrawSpace col (tX + x, tY + y) w
