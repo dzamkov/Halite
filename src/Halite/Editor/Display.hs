@@ -5,6 +5,7 @@ module Halite.Editor.Display where
 import Void
 import Halite.Editor.Draw (Width, Height, X, Y, Draw)
 import qualified Halite.Editor.Draw as Draw
+import Data.Monoid
 
 -- | Describes a position-invariant area in which text content can (or has)
 -- fit into.
@@ -32,8 +33,13 @@ data Layout a = Layout {
     -- | The offset of the given hole in layout coordinates.
     offset :: a -> (X, Y),
 
-    -- | Draws the contents of the layout, excluding holes.
-    drawAround :: Highlight -> Draw }
+    -- | Draws the contents of the layout given a function to
+    -- draw the contents of a hole (in hole-local coordinates).
+    draw :: (a -> Draw) -> Highlight -> Draw }
+
+-- | Draws the contents of a 'Layout', excluding holes.
+drawAround :: Layout a -> Highlight -> Draw
+drawAround layout = draw layout (const mempty)
 
 -- | Describes a figure with an ordered collection of /holes/ of type @a@.
 -- The shape and contents of the holes can be given to produce a 'Draw'.
@@ -91,7 +97,7 @@ concrete shape draw = Display {
     layout = const Layout {
         shape = shape,
         offset = undefined,
-        drawAround = draw }}
+        draw = const draw }}
 
 -- | Constructs a 'Display' for an atomic symbol.
 atom :: (?style :: Style) => String -> Display Void

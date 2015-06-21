@@ -7,7 +7,6 @@ import qualified Halite.Editor.Draw as Draw
 import Halite.Editor.Display (Shape, Highlight, Display)
 import qualified Halite.Editor.Display as Display
 import Data.Monoid
-import Control.Applicative
 
 -- | A filled 'Display' that represents some object. @a@ is the type of
 -- an immediate child of the object and @e@ is the type of a modification
@@ -37,8 +36,7 @@ shapeDraw control = (Display.shape layout, draw) where
         let offset = Display.offset layout x
             draw = snd (childDraw x) highlight
         in Draw.translate offset draw
-    draw highlight = Display.drawAround layout highlight <>
-        mconcat (drawChild highlight <$> Display.holes (display control))
+    draw highlight = Display.draw layout (drawChild highlight) highlight
 
 -- | Computes the 'Shape' of an unmodified control.
 shape :: Control p e a -> Shape
