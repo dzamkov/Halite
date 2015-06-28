@@ -5,7 +5,6 @@ module Halite.Editor.Display where
 import Void
 import Halite.Editor.Draw (Width, Height, X, Y, Draw)
 import qualified Halite.Editor.Draw as Draw
-import Data.Monoid
 
 -- | Describes a position-invariant area in which text content can (or has)
 -- fit into.
@@ -23,47 +22,31 @@ data Shape
 -- | Indicates whether a 'Draw' should be highlighted.
 type Highlight = Bool
 
--- | Describes the graphical contents of a position-invariant area with
--- unfilled /holes/ of type @a@.
-data Layout a = Layout {
+-- | A visual object bounded by a shape.
+data Display = Display {
 
-    -- | The shape of the layout area, including holes.
+    -- | The shape of the display.
     shape :: Shape,
 
-    -- | The offset of the given hole in layout coordinates.
-    offset :: a -> (X, Y),
+    -- | Draws the contents of the display, in shape-relative coordinates.
+    draw :: Highlight -> Draw }
 
-    -- | Draws the contents of the layout given a function to
-    -- draw the contents of a hole (in hole-local coordinates).
-    draw :: (a -> Draw) -> Highlight -> Draw }
+-- | A constructor for a 'Display' that requires several holes indexed by
+-- type @a@ to be filled.
+data Compound a = Compound {
 
--- | Draws the contents of a 'Layout', excluding holes.
-drawAround :: Layout a -> Highlight -> Draw
-drawAround layout = draw layout (const mempty)
+    -- | Gets the bounding shape for the given hole.
+    bounds :: a -> Shape,
 
--- | Describes a figure with an ordered collection of /holes/ of type @a@.
--- The shape and contents of the holes can be given to produce a 'Draw'.
-data Display a = Eq a => Display {
+    -- | Creates a 'Display' for this compound by filling all of its holes.
+    -- The offsets of each hole in the final 'Display' are also returned.
+    display :: (a -> Display) -> (a -> (X, Y), Display) }
 
-    -- | Gets the hole directly before the given hole.
-    before :: Maybe a -> Maybe a,
-
-    -- | Gets the hole directly after the given hole.
-    after :: Maybe a -> Maybe a,
-
-    -- | Gets the bounding shape that the contents of the given hole must fit
-    -- in.
-    limits :: a -> Shape,
-
-    -- | Constructs a layout for this 'Display' by assigning a shape to
-    -- all holes.
-    layout :: (a -> Shape) -> Layout a }
-
--- | Gets an ordered list of all holes in a display.
-holes :: Display a -> [a]
-holes display = go (after display Nothing) where
-    go Nothing = []
-    go cur@(Just head) = head : go (after display cur)
+-- | Converts a display into a compound with no holes.
+toCompound :: Display -> Compound Void
+toCompound display = Compound {
+    bounds = undefined,
+    display = const (undefined, display) }
 
 -- | Describes a global visual style for the editor.
 data Style = Style {
@@ -88,20 +71,11 @@ defaultStyle = Style {
     atomFore = Draw.lightGray,
     operatorFore = Draw.white }
 
--- | Constructs a 'Display' with no holes.
-concrete :: Shape -> (Highlight -> Draw) -> Display Void
-concrete shape draw = Display {
-    before = const Nothing,
-    after = const Nothing,
-    limits = undefined,
-    layout = const Layout {
-        shape = shape,
-        offset = undefined,
-        draw = const draw }}
-
 -- | Constructs a 'Display' for an atomic symbol.
-atom :: (?style :: Style) => String -> Display Void
-atom str = concrete (Inline (length str)) $ \highlight ->
-    let appr True = highlightAppr ?style
-        appr False = (normalBack ?style, atomFore ?style)
-    in Draw.string (appr highlight) (0, 0) str
+atom :: (?style :: Style) => String -> Display
+atom str = Display {
+    shape = Inline (length str),
+    draw = \highlight ->
+        let appr True = highlightAppr ?style
+            appr False = (normalBack ?style, atomFore ?style)
+        in Draw.string (appr highlight) (0, 0) str }

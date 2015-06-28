@@ -2,49 +2,62 @@
 {-# LANGUAGE RankNTypes #-}
 module Halite.Editor.Control where
 
-import Halite.Editor.Draw (Draw)
-import qualified Halite.Editor.Draw as Draw
-import Halite.Editor.Display (Shape, Highlight, Display)
+import Halite.Editor.Display (Shape, Display, Compound)
 import qualified Halite.Editor.Display as Display
-import Data.Monoid
 
--- | A filled 'Display' that represents some object. @a@ is the type of
--- an immediate child of the object and @e@ is the type of a modification
--- to the object.
-data Control p e a = Monoid e => Control {
+-- | A visual representation of an object. @s@ is the set of possible
+-- variants of the object that may be displayed in the same way. @e@ is
+-- a possible modification to the object.
+data Control p s e a = Control {
 
-    -- | Gets information about the object associated with a 'Control'. This
-    -- may include functions which modify the object by producing an @e@.
-    info :: p e a,
+    -- | Gets information about the object associated with a 'Control'.
+    -- This may include functions which modify the object producing an @e@.
+    info :: p s e a,
 
-    -- | Gets the display for a 'Control'.
-    display :: Display a,
+    -- | The initial state for the 'Control'. This is the state that the
+    -- 'Control' is most suited to display.
+    initial :: s,
+
+    -- | Updates the state of the 'Control' in response to the given
+    -- modification. In some cases, the modification may cause the
+    -- underlying object to be undisplayable by the 'Control'.
+    update :: e -> s -> Maybe s,
+
+    -- | Gets a 'Compound' to display this 'Control'. The resulting compound
+    -- is bounded by the given shape.
+    compound :: s -> Shape -> Compound a,
 
     -- | Gets a 'Control' for a child of this 'Control'. Note that the
     -- child object may have a different type than the parent object, but
     -- modifications made to the child can be mapped to the parent.
-    child :: forall r. a -> (forall h b.
-        Control p h b -> (h -> e) -> r) -> r }
+    child :: s -> a -> Child p e }
 
--- | Computes the 'Shape' and 'Draw' needed to draw an unmodified control.
-shapeDraw :: Control p e a -> (Shape, Highlight -> Draw)
-shapeDraw control = (Display.shape layout, draw) where
-    childDraw x = child control x (\c _ -> shapeDraw c)
-    childShape = fst . childDraw
-    layout = Display.layout (display control) childShape
-    drawChild highlight x =
-        let offset = Display.offset layout x
-            draw = snd (childDraw x) highlight
-        in Draw.translate offset draw
-    draw highlight = Display.draw layout (drawChild highlight) highlight
+-- | Describes a child control of a 'Control'.
+data Child p e = forall s h a. Child {
 
--- | Computes the 'Shape' of an unmodified control.
-shape :: Control p e a -> Shape
-shape = fst . shapeDraw
+    -- | The control associated with this child.
+    control :: Control p s h a,
 
--- | Draws an unmodified control.
-draw :: Control p e a -> Highlight -> Draw
-draw = snd . shapeDraw
+    -- | Maps a modification of the child to a modification of the parent.
+    liftMod :: h -> e,
 
--- | A 'Control' of some modification and child type.
-data AnyControl p = forall e a. AnyControl (Control p e a)
+    -- | Indicates whether the scope of the given modification is limited
+    -- to the child control. This implies that, while handling the
+    -- modification, only the child will need to be redisplayed. Note that
+    -- even if this is 'True', the modification will still alter the parent's
+    -- state (as this is required for the modification to be persistant).
+    isLocal :: h -> Bool }
+
+-- | Constructs a display for a control in its initial state, given a
+-- bounding shape.
+display :: Control p s e a -> Shape -> Display
+display control shape =
+    let initial' = initial control
+        compound' = compound control initial' shape
+    in snd $ Display.display compound' (\index ->
+        let bound = Display.bounds compound' index
+        in (\Child { control = childControl } ->
+            display childControl bound) $ child control initial' index)
+
+-- | A control with any internal state, modification and child type.
+data AnyControl p = forall s e a. AnyControl (Control p s e a)

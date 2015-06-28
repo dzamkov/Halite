@@ -21,8 +21,8 @@ getVarSymbol :: v -> ContextM v Symbol
 getVarSymbol var lookup = lookup var
 
 -- | The information type for a 'Control' consisting of 'Expression's.
-data Info e a where
-    InfoExp :: Expression v -> Info Void a
+data Info s e a where
+    InfoExp :: Expression v -> Info s Void a
 
 -- | Builds a control for the given expression.
 build :: (?style :: Style) => Expression a
@@ -31,6 +31,8 @@ build exp@(Exp (Var x)) _ = do
     Atom str <- getVarSymbol x
     return $ AnyControl Control {
         Control.info = InfoExp exp,
-        Control.display = Display.atom str,
+        Control.initial = (),
+        Control.update = undefined,
+        Control.compound = \_ _ -> Display.toCompound $ Display.atom str,
         Control.child = undefined }
 build _ _ = error "not implemented" -- TODO

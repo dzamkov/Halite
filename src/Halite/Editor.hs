@@ -44,4 +44,4 @@ main = do
     case control of
         AnyControl control -> flip evalStateT undefined $ do
             sync
-            runDraw $ Control.draw control False
+            runDraw $ Display.draw (Control.display control shape) False
