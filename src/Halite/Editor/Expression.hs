@@ -4,8 +4,8 @@ module Halite.Editor.Expression where
 
 import Void
 import Halite.Expression
-import Halite.Editor.Display (Shape, Style)
-import qualified Halite.Editor.Display as Display
+import Halite.Editor.Compound (Shape, Style)
+import qualified Halite.Editor.Compound as Compound
 import Halite.Editor.Control (Control (Control), AnyControl (AnyControl))
 import qualified Halite.Editor.Control as Control
 
@@ -33,6 +33,6 @@ build exp@(Exp (Var x)) _ = do
         Control.info = InfoExp exp,
         Control.initial = (),
         Control.update = undefined,
-        Control.compound = \_ _ -> Display.toCompound $ Display.atom str,
+        Control.compound = \_ _ -> Compound.atom str,
         Control.child = undefined }
 build _ _ = error "not implemented" -- TODO

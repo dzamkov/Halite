@@ -1,6 +1,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ImplicitParams #-}
-module Halite.Editor.Display where
+module Halite.Editor.Compound where
 
 import Void
 import Halite.Editor.Draw (Width, Height, X, Y, Draw)
@@ -42,9 +42,9 @@ data Compound a = Compound {
     -- The offsets of each hole in the final 'Display' are also returned.
     display :: (a -> Display) -> (a -> (X, Y), Display) }
 
--- | Converts a display into a compound with no holes.
-toCompound :: Display -> Compound Void
-toCompound display = Compound {
+-- | Converts a 'Display' into a 'Compound' with no holes.
+fromDisplay :: Display -> Compound Void
+fromDisplay display = Compound {
     bounds = undefined,
     display = const (undefined, display) }
 
@@ -71,9 +71,9 @@ defaultStyle = Style {
     atomFore = Draw.lightGray,
     operatorFore = Draw.white }
 
--- | Constructs a 'Display' for an atomic symbol.
-atom :: (?style :: Style) => String -> Display
-atom str = Display {
+-- | Constructs a 'Compound' for an atomic symbol.
+atom :: (?style :: Style) => String -> Compound Void
+atom str = fromDisplay Display {
     shape = Inline (length str),
     draw = \highlight ->
         let appr True = highlightAppr ?style

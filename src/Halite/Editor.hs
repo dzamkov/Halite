@@ -5,7 +5,7 @@ import Halite.Expression
 import Halite.Editor.Expression
 import Halite.Editor.Input
 import Halite.Editor.Draw (sync, runDraw)
-import qualified Halite.Editor.Display as Display
+import qualified Halite.Editor.Compound as Compound
 import Halite.Editor.Control (AnyControl (..))
 import qualified Halite.Editor.Control as Control
 import Control.Monad.State
@@ -36,12 +36,12 @@ getCommand = do
 
 main :: IO ()
 main = do
-    let ?style = Display.defaultStyle
+    let ?style = Compound.defaultStyle
     let exp = Exp (Var "hello")
         lookup = Atom
-        shape = Display.Inline 80
+        shape = Compound.Inline 80
         control = build exp shape lookup
     case control of
         AnyControl control -> flip evalStateT undefined $ do
             sync
-            runDraw $ Display.draw (Control.display control shape) False
+            runDraw $ Compound.draw (Control.display control shape) False

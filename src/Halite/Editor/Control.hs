@@ -2,8 +2,8 @@
 {-# LANGUAGE RankNTypes #-}
 module Halite.Editor.Control where
 
-import Halite.Editor.Display (Shape, Display, Compound)
-import qualified Halite.Editor.Display as Display
+import Halite.Editor.Compound (Shape, Display, Compound)
+import qualified Halite.Editor.Compound as Compound
 
 -- | A visual representation of an object. @s@ is the set of possible
 -- variants of the object that may be displayed in the same way. @e@ is
@@ -54,8 +54,8 @@ display :: Control p s e a -> Shape -> Display
 display control shape =
     let initial' = initial control
         compound' = compound control initial' shape
-    in snd $ Display.display compound' (\index ->
-        let bound = Display.bounds compound' index
+    in snd $ Compound.display compound' (\index ->
+        let bound = Compound.bounds compound' index
         in (\Child { control = childControl } ->
             display childControl bound) $ child control initial' index)
 
