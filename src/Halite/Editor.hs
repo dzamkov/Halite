@@ -1,13 +1,10 @@
-{-# LANGUAGE ImplicitParams #-}
 module Halite.Editor where
 
-import Halite.Expression
-import Halite.Editor.Expression
 import Halite.Editor.Input
 import Halite.Editor.Draw (sync, runDraw)
-import qualified Halite.Editor.Compound as Compound
-import Halite.Editor.Control (AnyControl (..))
-import qualified Halite.Editor.Control as Control
+import qualified Halite.Editor.Draw as Draw
+import Halite.Editor.Display
+import Data.Monoid
 import Control.Monad.State
 
 -- | Describes a navigation command.
@@ -34,14 +31,17 @@ getCommand = do
         'q' -> return Quit
         _ -> getCommand
 
+display :: Display ()
+display =
+    text Draw.white "hello" <>
+    varSpace <>
+    text Draw.lightBlue "world"
+
 main :: IO ()
 main = do
-    let ?style = Compound.defaultStyle
-    let exp = Exp (Var "hello")
-        lookup = Atom
-        shape = Compound.Inline 80
-        control = build exp shape lookup
-    case control of
-        AnyControl control -> flip evalStateT undefined $ do
-            sync
-            runDraw $ Compound.draw (Control.display control shape) False
+    let inst : _ = instantiate display (Fixed $ Inline 50)
+        appr = (Draw.black, Nothing)
+        drawInst = draw inst appr
+    flip evalStateT undefined $ do
+        sync
+        runDraw drawInst

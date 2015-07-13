@@ -80,7 +80,7 @@ changePos nPos@(nX, nY) = do
     st <- get
     let oPos = pos st
     when (oPos /= nPos) $ do
-        liftIO $ ANSI.setCursorPosition nX nY
+        liftIO $ ANSI.setCursorPosition nY nX
         put $ st { pos = nPos }
 
 -- | Sets the background for future draw operations.
