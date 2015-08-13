@@ -1,63 +1,62 @@
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE RankNTypes #-}
 module Halite.Editor.Control where
 
-import Halite.Editor.Compound (Shape, Display, Compound)
-import qualified Halite.Editor.Compound as Compound
+import Halite.Editor.Draw (X, Y)
+import Halite.Editor.Display (Display)
+import qualified Halite.Editor.Display as Display
 
--- | A visual representation of an object. @s@ is the set of possible
--- variants of the object that may be displayed in the same way. @e@ is
+-- | An interactive visual representation of an object where @e@ is the type of
 -- a possible modification to the object.
-data Control p s e a = Control {
+data Control p e = forall s a. Control {
 
-    -- | Gets information about the object associated with a 'Control'.
-    -- This may include functions which modify the object producing an @e@.
-    info :: p s e a,
-
-    -- | The initial state for the 'Control'. This is the state that the
-    -- 'Control' is most suited to display.
+    -- | The initial state for the 'Control'.
     initial :: s,
 
     -- | Updates the state of the 'Control' in response to the given
-    -- modification. In some cases, the modification may cause the
-    -- underlying object to be undisplayable by the 'Control'.
-    update :: e -> s -> Maybe s,
+    -- modification, returning the new state and a 'Bool' indicating whether
+    -- the 'Control' needs to be redisplayed. The modification may cause the
+    -- underlying object to be undisplayable by the 'Control'; in which case,
+    -- 'Nothing' is returned.
+    update :: e -> s -> Maybe (s, Bool),
 
-    -- | Gets a 'Compound' to display this 'Control'. The resulting compound
-    -- is bounded by the given shape.
-    compound :: s -> Shape -> Compound a,
+    -- | Identifies the children for this 'Control' and their order of
+    -- appearance when using 'display'.
+    children :: [a],
 
-    -- | Gets a 'Control' for a child of this 'Control'. Note that the
-    -- child object may have a different type than the parent object, but
-    -- modifications made to the child can be mapped to the parent.
-    child :: s -> a -> Child p e }
+    -- | Describes a child of this 'Control'.
+    child :: a -> Child p e,
 
--- | Describes a child control of a 'Control'.
-data Child p e = forall s h a. Child {
+    -- | Gets a 'Display' for this 'Control' when provided 'Display's
+    -- for its children.
+    display :: forall r. s -> (a -> Display r) -> Display r }
 
-    -- | The control associated with this child.
-    control :: Control p s h a,
+-- | Describes a child element of a 'Control'.
+data Child p e = forall h. Child {
+
+    -- | Describes the contents of the 'Child' before any modifications
+    -- have occured.
+    info :: p h,
+
+    -- | Describes the relationship between the parent object and the
+    -- child object.
+    relation :: Relation e h }
+
+-- | Describes a composition relationship between two objects where the parent
+-- object has modification type @e@ and the child object has modification
+-- type @h@.
+data Relation e h = Relation {
 
     -- | Maps a modification of the child to a modification of the parent.
-    liftMod :: h -> e,
+    raiseMod :: h -> e,
 
-    -- | Indicates whether the scope of the given modification is limited
-    -- to the child control. This implies that, while handling the
-    -- modification, only the child will need to be redisplayed. Note that
-    -- even if this is 'True', the modification will still alter the parent's
-    -- state (as this is required for the modification to be persistant).
-    isLocal :: h -> Bool }
+    -- | Maps a modification of the parent to a modification of the child,
+    -- or returns 'Nothing' if no modification to the child is being made.
+    lowerMod :: e -> Maybe h }
 
--- | Constructs a display for a control in its initial state, given a
--- bounding shape.
-display :: Control p s e a -> Shape -> Display
-display control shape =
-    let initial' = initial control
-        compound' = compound control initial' shape
-    in snd $ Compound.display compound' (\index ->
-        let bound = Compound.bounds compound' index
-        in (\Child { control = childControl } ->
-            display childControl bound) $ child control initial' index)
-
--- | A control with any internal state, modification and child type.
-data AnyControl p = forall s e a. AnyControl (Control p s e a)
+-- | Displays an unmodified 'Control'.
+displayDefault :: (forall h. p h -> Display r) -> Control p e -> Display r
+displayDefault d Control { .. } =
+    display initial ((\Child { info } -> d info) . child)
