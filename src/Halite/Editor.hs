@@ -4,6 +4,7 @@ module Halite.Editor where
 import Halite.Editor.Input
 import Halite.Editor.Draw (sync, runDraw)
 import qualified Halite.Editor.Draw as Draw
+import Halite.Editor.Control
 import Halite.Editor.Display
 import Halite.Editor.Style
 import Data.Monoid
